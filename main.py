@@ -102,7 +102,12 @@ if __name__ == "__main__":
     _main(args)
 
 """ command
-CUDA_VISIBLE_DEVICES=6 python main.py --model=fractalnet --num_epochs=400 --batch_size=100 --lr=0.02 --scheduler=MultiStepLR
-CUDA_VISIBLE_DEVICES=6 python main.py --model=densenet --num_epochs=300 --batch_size=64 --lr=0.01 --scheduler=MultiStepLR
-CUDA_VISIBLE_DEVICES=6 python main.py --model=vit --num_epochs=400 --batch_size=128 --optimizer=AdamW --lr=0.0003 --weight_decay=0.02 --scheduler=CosineAnnealingLR
+CUDA_VISIBLE_DEVICES=7 python main.py --model=fractalnet --num_epochs=400 --batch_size=100 --lr=0.02 --scheduler=MultiStepLR
+CUDA_VISIBLE_DEVICES=7 python main.py --model=densenet --num_epochs=300 --batch_size=64 --lr=0.01 --scheduler=MultiStepLR
+CUDA_VISIBLE_DEVICES=7 python main.py --model=vit --num_epochs=400 --batch_size=128 --optimizer=AdamW --lr=0.0003 --weight_decay=0.02 --scheduler=CosineAnnealingLR
+CUDA_VISIBLE_DEVICES=7 python main.py --model=mlp_mixer --num_epochs=400 --batch_size=128 --optimizer=AdamW --lr=0.001 --weight_decay=0.1 --scheduler=CosineAnnealingLR
+CUDA_VISIBLE_DEVICES=7 python main.py --model=conv_mixer --num_epochs=200 --batch_size=128 --optimizer=AdamW --lr=0.001 --weight_decay=1e-3 --scheduler=CosineAnnealingLR
+"""
+""" test command
+CUDA_VISIBLE_DEVICES=7 python main.py --model=fractalnet --num_epochs=10 --batch_size=100 --lr=0.02 --scheduler=MultiStepLR
 """
