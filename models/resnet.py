@@ -89,12 +89,16 @@ class ResNet(nn.Module):
             layers.append(block(in_channels[i], out_channels, strides[i]))
         return nn.Sequential(*layers) # unpacking.
 
-    def forward(self, x):
+    def forward_features(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.layers1(out)
         out = self.layers2(out)
         out = self.layers3(out)
         out = self.gap(out)
         out = out.view(out.size(0), -1)
+        return out
+
+    def forward(self, x):
+        out = self.forward_features(x)
         out = self.fc(out)
         return out
