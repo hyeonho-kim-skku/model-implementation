@@ -212,3 +212,6 @@ data/
 *.pth
 *.tar.gz
 *.tfevents.*
+
+# 백업 파일 무시.
+backups/
