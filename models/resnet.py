@@ -7,20 +7,10 @@ class BasicBlock(nn.Module):
 
     def __init__(self, in_channels, out_channels, first_stride):
         super(BasicBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=in_channels,
-                            out_channels=out_channels,
-                            kernel_size=3,
-                            stride=first_stride,
-                            padding=1,
-                            bias=False)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=first_stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
         
-        self.conv2 = nn.Conv2d(in_channels=out_channels,
-                            out_channels=out_channels,
-                            kernel_size=3,
-                            stride=1,
-                            padding=1,
-                            bias=False)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
 
         # projection shortcut 사용.
@@ -68,18 +58,14 @@ class ResNet(nn.Module):
     def __init__(self, block, num_blocks):
         super(ResNet, self).__init__()
 
-        self.conv1 = nn.Conv2d(in_channels=3,
-                            out_channels=16,
-                            kernel_size=3,
-                            stride=1,
-                            padding=1,
-                            bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.layers1 = self._make_layers(block, num_blocks[0], 16, 16, 1)
-        self.layers2 = self._make_layers(block, num_blocks[1], 16*block.expansion, 32, 2)
-        self.layers3 = self._make_layers(block, num_blocks[2], 32*block.expansion, 64, 2)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.layers1 = self._make_layers(block, num_blocks[0], 64, 64, 1)
+        self.layers2 = self._make_layers(block, num_blocks[1], 64*block.expansion, 128, 2)
+        self.layers3 = self._make_layers(block, num_blocks[2], 128*block.expansion, 256, 2)
+        self.layers4 = self._make_layers(block, num_blocks[3], 256*block.expansion, 512, 2)
         self.gap = nn.AdaptiveAvgPool2d(output_size=1) # global average pooling.
-        self.fc = nn.Linear(in_features=64*block.expansion, out_features=10)
+        self.fc = nn.Linear(in_features=512*block.expansion, out_features=10)
         
     def _make_layers(self, block, num_blocks, first_channel, out_channels, first_stride): # Bottleneck경우 out_channels는 middle_channels를 의미.
         strides = [first_stride] + [1]*(num_blocks-1)
@@ -94,6 +80,7 @@ class ResNet(nn.Module):
         out = self.layers1(out)
         out = self.layers2(out)
         out = self.layers3(out)
+        out = self.layers4(out)
         out = self.gap(out)
         out = out.view(out.size(0), -1)
         return out
@@ -102,3 +89,9 @@ class ResNet(nn.Module):
         out = self.forward_features(x)
         out = self.fc(out)
         return out
+
+def ResNet18():
+    return ResNet(BasicBlock, [2, 2, 2, 2]) # 64->128->256->512
+
+def ResNet50():
+    return ResNet(Bottleneck, [3, 4, 6, 3]) # 64->128->256->512
