@@ -11,71 +11,71 @@ dropout: (after every dense layer) except for the the qkv-projections and direct
 MLP: The MLP contains two layers with a GELU non-linearity.
 """
 
-class Transformer(nn.Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.):
+class MLP(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout=0.):
+        """
+        dim: 입력과 출력 벡터 차원(Transformer 차원)
+        hidden_dim: 중간 은닉층 차원(MLP 확장 차원, Tansformer에서 4배)
+        """
         super().__init__()
-        self.layers = nn.ModuleList([])
-        self.heads = heads
-        self.scale = dim_head ** -0.5
+        self.layers = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        out = self.layers(x)
+        return out
+
+class MultiHeadSelfAttention(nn.Module): # MSA(Multi-head Self Attention)
+    def __init__(self, dim, heads, dim_head, dropout):
+        super().__init__()
         inner_dim = dim_head * heads
 
-        for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                # --- Attention Part ---
-                nn.LayerNorm(dim),                               # 0: Attention Pre-Norm
-                nn.Linear(dim, inner_dim * 3, bias=False),       # 1: to_qkv
-                nn.Dropout(dropout),                             # 2: attn_dropout (softmax 후)
-                nn.Sequential(                                   # 3: to_out (Linear + Dropout)
-                    nn.Linear(inner_dim, dim),
-                    nn.Dropout(dropout)
-                ),
-                
-                # --- MLP Part ---
-                nn.LayerNorm(dim),                               # 4: MLP Pre-Norm
-                nn.Sequential(                                   # 5: MLP Network
-                    nn.Linear(dim, mlp_dim),
-                    nn.GELU(),
-                    nn.Dropout(dropout),
-                    nn.Linear(mlp_dim, dim),
-                    nn.Dropout(dropout)
-                )
-            ]))
+        self.heads = heads
+        self.scale = dim_head ** -0.5 # attention 식의 분모(sqrt(d_k))
 
-        self.norm = nn.LayerNorm(dim) # Final Norm
+        self.softmax = nn.Softmax(dim = -1)
+        self.dropout = nn.Dropout(dropout)
+
+        self.to_qkv = nn.Linear(dim, inner_dim*3, bias=False) # Eq.5~7의 U_qkv 부분. 효율을 위해 w_q, w_k, w_v를 한번에 계산.
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        # 긴 벡터 inner_dim을 여러개의 헤드(h)와 작은 차원(d)으로 쪼갬.
+        # head 차원(h)을 시퀀스(n) 앞으로 보냄. 그래야 헤드별 독립 연산 가능.
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.heads), qkv) # [Batch, Heads, N, Head_dim]
+
+        dots = torch.matmul(q, k.transpose(-1, -2))*self.scale # [B, H, N, N]토큰들이 서로 얼마나 관계있는지 score map.
+
+        attn = self.softmax(dots)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v) # [B, H, N, D] 확률값(attn)에 실제 정보(v)를 곱해서 섞음.
+        out = rearrange(out, 'b h n d -> b n (h d)') # head를 다시 합쳐 inner_dim으로 복구.
+        out = self.to_out(out)
+        return out
+
+class TransformerBlock(nn.Module):
+    def __init__(self, dim, heads, dim_head, mlp_dim, dropout=0. ):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(dim)
+        self.mhsa = MultiHeadSelfAttention(dim, heads, dim_head, dropout)
+        self.ln2 = nn.LayerNorm(dim)
+        self.mlp = MLP(dim, mlp_dim, dropout=dropout)
         
     def forward(self, x):
-        # layers 리스트에서 각 구성 요소를 꺼내어 절차적으로 연산
-        for norm_attn, to_qkv, attn_dropout, to_out, norm_mlp, mlp_net in self.layers:
-            
-            # --- 1. Attention Logic ---
-            residual = x
-            x_norm = norm_attn(x) # Pre-Norm
-            
-            # QKV 계산 및 분할
-            qkv = to_qkv(x_norm).chunk(3, dim=-1)
-            q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), qkv)
-
-            # Attention Score 계산
-            dots = torch.matmul(q, k.transpose(-1, -2) * self.scale)
-            attn = F.softmax(dots, dim=-1)
-            attn = attn_dropout(attn)
-
-            # 가중합 및 복원
-            attn_out = torch.matmul(attn, v)
-            attn_out = rearrange(attn_out, 'b h n d -> b n (h d)')
-            attn_out = to_out(attn_out)
-            
-            x = residual + attn_out # Skip Connection
-
-            # --- 2. MLP Logic ---
-            residual = x
-            x_norm = norm_mlp(x) # Pre-Norm
-            mlp_out = mlp_net(x_norm)
-            
-            x = residual + mlp_out # Skip Connection
-
-        return self.norm(x)
-
+        out = x + self.mhsa(self.ln1(x))
+        out = out + self.mlp(self.ln2(out))
+        return out
 
 class ViT(nn.Module):
     def __init__(self, image_size, patch_size, channels, dim, depth, heads, dim_head, mlp_dim, emb_dropout=0., dropout=0., num_classes=10):
@@ -101,7 +101,9 @@ class ViT(nn.Module):
 
         self.dropout = nn.Dropout(emb_dropout)
 
-        self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.transformer = nn.ModuleList(
+            TransformerBlock(dim, heads, dim_head, mlp_dim, dropout) for _ in range(depth)
+        )
 
         self.mlp_head = nn.Linear(dim, num_classes)
     
@@ -115,7 +117,10 @@ class ViT(nn.Module):
 
         x = x + self.positional_embedding
         x = self.dropout(x)
-        x = self.transformer(x)
+
+        for block in self.transformer:
+            x = block(x)
+
         x = x[:,0] # CLS 토큰만 가져옴.
         x = self.mlp_head(x)
         return x
