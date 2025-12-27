@@ -5,9 +5,11 @@ import argparse
 from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.nn.functional as F
+from utils import knn_eval
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 best_acc = 0
+best_knn_acc = 0
 
 def train(args, method, optimizer, trainloader, writer, epoch):
     method.model.train()
@@ -50,20 +52,20 @@ def test(args, testloader, method, epoch, writer):
     if acc > best_acc:
         best_acc = acc
 
-        save_ckpt(args, method.model, acc, epoch)
+        save_ckpt(args, method.model, acc, epoch, "_cls")
 
     print(f'Epoch {epoch} - Test Loss: {test_loss/len(testloader):.4f}, Test Acc: {acc:.2f}%, Best Acc: {best_acc:.2f}')
     writer.add_scalar('test_loss',test_loss/len(testloader),epoch)
     writer.add_scalar('test_acc',acc,epoch)
 
-def save_ckpt(args, model, acc, epoch):
+def save_ckpt(args, model, acc, epoch, suffix):
     state = {
         'model': model.state_dict(),
         'acc': acc,
         'epoch': epoch
     }
 
-    torch.save(state, './checkpoint/' + args.model + '_ckpt.pth')
+    torch.save(state, './checkpoint/' + args.model + suffix + '_ckpt.pth')
 
 def _main(args):
     model = load_model(args.model)
@@ -78,13 +80,22 @@ def _main(args):
 
     writer = SummaryWriter('./runs/' + args.model)
 
-    for epoch in range(args.num_epochs): # resnet은 64k iteration => 64000*128/5000 = 약 163 epoch.
+    for epoch in range(args.num_epochs):
         train(args, method, optimizer, trainloader, writer, epoch)
-        # pretrain시에 마지막 parameter일 경우 모델 저장.
+
+        # pretrain일때는 knn evaluation.
         if args.pretrain:
-            save_ckpt(args, model, -1, epoch)
-        # SimCLR 같이 pretrain할 경우 test 진행 x.
-        if testloader is not None:
+            if epoch%5 == 0: # 5 에폭마다 knn_eval 진행.
+                knn_acc = knn_eval(model, trainloader, testloader, device)
+
+                global best_knn_acc
+                if knn_acc > best_knn_acc:
+                    best_knn_acc = knn_acc
+                    save_ckpt(args, model, knn_acc, epoch, "_knn")
+
+                print(f'[Epoch {epoch}] 1NN top-1: {knn_acc:.2f}% Best 1nn top-1: {best_knn_acc:.2f}%')
+        # supervised learning일 때는 classification.
+        else:
             test(args, testloader, method, epoch, writer)
         scheduler.step()
     
@@ -117,7 +128,7 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=mlp_mixer --num_epochs=400 --batch
 CUDA_VISIBLE_DEVICES=7 python main.py --model=conv_mixer --num_epochs=200 --batch_size=128 --optimizer=AdamW --lr=0.001 --weight_decay=1e-3 --scheduler=CosineAnnealingLR
 CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10_rotnet --num_epochs=200 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
 # rotnet pretrain
-CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10_rotnet --num_epochs=200 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
+CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10 --num_epochs=200 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
 # rotnet pretrained + classifier
 CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_classifier --dataset=CIFAR10 --num_epochs=100 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
 # simclr pretrain
@@ -126,7 +137,7 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr --dataset=CIFAR10_SimCLR --
 """ test command
 CUDA_VISIBLE_DEVICES=7 python main.py --model=fractalnet --num_epochs=10 --batch_size=100 --lr=0.02 --scheduler=MultiStepLR
 # rotnet pretrain
-CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10_rotnet --num_epochs=10 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
+CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10 --num_epochs=10 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
 # rotnet pretrained + classifier
 CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_classifier --dataset=CIFAR10 --num_epochs=10 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
 # simclr pretrain

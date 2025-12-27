@@ -32,3 +32,35 @@ def nt_xent_loss(zi, zj, temperature=0.5):
 
     loss = F.cross_entropy(logits, labels)
     return loss
+
+@torch.no_grad()
+def extract_features(model, dataloader, device):
+    model.eval()
+    feats, labels = [], []
+    for x, y in dataloader:
+        x, y = x.to(device), y.to(device)
+
+        h = model.forward_features(x)
+        feats.append(h.cpu())
+        labels.append(y.cpu())
+    feats = torch.cat(feats, dim=0) 
+    labels = torch.cat(labels, dim=0)
+    return feats, labels
+
+@torch.no_grad()
+def knn_1nn_top1(train_feats, train_labels, test_feats, test_labels):
+    # cosine similarity based knn
+    train_feats = F.normalize(train_feats, dim=1)
+    test_feats = F.normalize(test_feats, dim=1)
+
+    sim = torch.matmul(test_feats, train_feats.transpose(0,1)) # [N_test, N_train]
+    idx = sim.argmax(dim=1) # [N_test] 가장 유사도가 높은 train feature의 인덱스.
+    pred = train_labels[idx] # [N_test] 예측한 label.
+    acc = (pred == test_labels).float().mean().item() * 100.0
+    return acc
+
+def knn_eval(model, trainloader, testloader, device):
+    train_feats, train_labels = extract_features(model, trainloader, device)
+    test_feats, test_labels = extract_features(model, testloader, device)
+    acc = knn_1nn_top1(train_feats, train_labels, test_feats, test_labels)
+    return acc
