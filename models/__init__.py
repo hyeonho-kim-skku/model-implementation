@@ -11,7 +11,6 @@ from .conv_mixer import *
 from .rotnet import *
 from .simclr import *
 
-
 def load_model(model, **kwargs):
     if model == 'fractalnet':
         return FractalNet()
@@ -39,33 +38,3 @@ def load_model(model, **kwargs):
         return SimCLR()
     elif model == 'simclr_classifier':
         return SimCLRClassifier()
-
-# def load_model_bak(model_name, block, num_blocks):
-#     if model_name == 'pre_act_resnet':
-#         return PreActResNet(PreActBottleneck, num_blocks)
-
-def load_resnet(block, num_blocks):
-    if block == 'BasicBlock':
-        return ResNet(BasicBlock, num_blocks)
-    else:
-        return ResNet(Bottleneck, num_blocks)
-
-def load_criterion(criterion_name, batch_size, device='cuda'):
-    if criterion_name == 'crossentropyloss':
-        return nn.CrossEntropyLoss()
-    elif criterion_name == 'NTXent':
-        return NTXentLoss(batch_size=batch_size, temperature=0.5, device=device)
-
-def load_optimizer(optimizer_name, model, lr, weight_decay, momentum=None, nesterov=False):
-    params = (p for p in model.parameters() if p.requires_grad) # for문 돌면서, requires_grad=True인 것들만 추출.
-    if optimizer_name == 'SGD':
-        return torch.optim.SGD(params, lr=lr, momentum=momentum, weight_decay=weight_decay, nesterov=nesterov)
-    if optimizer_name == 'AdamW':
-        return torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
-
-def load_scheduler(scheduler_name, optimizer, num_epochs):
-    if scheduler_name == 'MultiStepLR':
-        milestones = [int(0.5 * num_epochs), int(0.75 * num_epochs)]  # [50% epoch, 75% ecpoh]
-        return torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
-    elif scheduler_name == 'CosineAnnealingLR':
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, num_epochs)

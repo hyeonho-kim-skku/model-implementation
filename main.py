@@ -1,11 +1,11 @@
 from datasets import load_dataset
-from models import *
+from models import load_model
 from methods import load_method
 import argparse
 from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.nn.functional as F
-from utils import knn_eval
+from utils import knn_eval, load_optimizer, load_scheduler
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 best_acc = 0

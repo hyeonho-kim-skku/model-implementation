@@ -57,6 +57,6 @@ def load_dataset(dataset_name, batch_size):
         return trainloader, testloader
     elif dataset_name == 'CIFAR10_SimCLR':
         trainset = CIFAR10Pair()
-        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=True)
+        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2, drop_last=True)
 
         return trainloader, None

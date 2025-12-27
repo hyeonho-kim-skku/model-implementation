@@ -4,7 +4,7 @@ from utils import nt_xent_loss
 class SimCLR(nn.Module):
     def __init__(self, model):
         super().__init__()
-        self.model =model
+        self.model = model
 
     def forward(self, batch):
         (x1, x2), _ = batch # x1, x2: (B, C, H, W)
