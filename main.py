@@ -94,6 +94,7 @@ def _main(args):
                     save_ckpt(args, model, knn_acc, epoch, "_knn")
 
                 print(f'[Epoch {epoch}] 1NN top-1: {knn_acc:.2f}% Best 1nn top-1: {best_knn_acc:.2f}%')
+                writer.add_scalar('knn_acc', knn_acc, epoch)
         # supervised learning일 때는 classification.
         else:
             test(args, testloader, method, epoch, writer)
