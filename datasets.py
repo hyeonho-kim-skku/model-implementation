@@ -30,9 +30,9 @@ class CIFAR10Pair(Dataset):
         return len(self.base_dataset)
     
     def __getitem__(self, idx):
-        img, _ = self.base_dataset[idx]
+        img, label = self.base_dataset[idx]
         xi, xj = self.transform(img)
-        return xi, xj
+        return (xi, xj), label
 
 def load_dataset(dataset_name, batch_size):
     if dataset_name == 'CIFAR10':
@@ -59,4 +59,19 @@ def load_dataset(dataset_name, batch_size):
         trainset = CIFAR10Pair()
         trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2, drop_last=True)
 
-        return trainloader, None
+        transform_test = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2470, 0.2435, 0.2616]) # mean, std
+        ])
+        testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
+
+        return trainloader, testloader
+    elif dataset_name == 'knn_train':
+        transform_train = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2470, 0.2435, 0.2616]) # mean, std
+        ])       
+        trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
+        return trainloader

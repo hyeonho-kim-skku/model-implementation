@@ -16,7 +16,10 @@ def train(args, method, optimizer, trainloader, writer, epoch):
     
     train_loss = 0.0
     for batch in trainloader:
-        batch = tuple(b.to(device) for b in batch)
+        # simclr
+        (x1, x2), label = batch
+        batch = ((x1.to(device), x2.to(device)), label.to(device))
+        # batch = tuple(b.to(device) for b in batch)
 
         optimizer.zero_grad()
         loss = method(batch)
@@ -54,7 +57,7 @@ def test(args, testloader, method, epoch, writer):
 
         save_ckpt(args, method.model, acc, epoch, "_cls")
 
-    print(f'Epoch {epoch} - Test Loss: {test_loss/len(testloader):.4f}, Test Acc: {acc:.2f}%, Best Acc: {best_acc:.2f}')
+    print(f'[Epoch {epoch}] - Test Loss: {test_loss/len(testloader):.4f}, Test Acc: {acc:.2f}%, Best Acc: {best_acc:.2f}')
     writer.add_scalar('test_loss',test_loss/len(testloader),epoch)
     writer.add_scalar('test_acc',acc,epoch)
 
@@ -72,6 +75,7 @@ def _main(args):
     model.to(device)
     
     trainloader, testloader = load_dataset(args.dataset, args.batch_size)
+    knn_trainloader = load_dataset("knn_train", args.batch_size) # 나중에 리팩토링
 
     method = load_method(args.method, model)
     # criterion = load_criterion(args.criterion, args.batch_size)
@@ -86,7 +90,7 @@ def _main(args):
         # pretrain일때는 knn evaluation.
         if args.pretrain:
             if epoch%5 == 0: # 5 에폭마다 knn_eval 진행.
-                knn_acc = knn_eval(model, trainloader, testloader, device)
+                knn_acc = knn_eval(model, knn_trainloader, testloader, device)
 
                 global best_knn_acc
                 if knn_acc > best_knn_acc:
@@ -133,8 +137,9 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10 
 # rotnet pretrained + classifier
 CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_classifier --dataset=CIFAR10 --num_epochs=100 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
 # simclr pretrain
-CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr --dataset=CIFAR10_SimCLR --num_epochs=300 --batch_size=512 --criterion=NTXent --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
+CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr --method=simclr --dataset=CIFAR10_SimCLR --num_epochs=300 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
 """
+
 """ test command
 CUDA_VISIBLE_DEVICES=7 python main.py --model=fractalnet --num_epochs=10 --batch_size=100 --lr=0.02 --scheduler=MultiStepLR
 # rotnet pretrain
@@ -142,7 +147,7 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10 
 # rotnet pretrained + classifier
 CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_classifier --dataset=CIFAR10 --num_epochs=10 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
 # simclr pretrain
-CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr --dataset=CIFAR10_SimCLR --num_epochs=10 --batch_size=512 --criterion=NTXent --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
+CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr --method=simclr --dataset=CIFAR10_SimCLR --num_epochs=10 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
 # simclr pretrained + classifier
-CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr_classifier --dataset=CIFAR10 --num_epochs=100 --batch_size=512 --criterion=crossentropyloss --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
+CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr_classifier --dataset=CIFAR10 --num_epochs=100 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
 """
