@@ -1,6 +1,7 @@
 from .supervised_learning import *
 from .rotnet import *
 from .simclr import *
+from .moco import *
 
 def load_method(method_name, model):
     if method_name == 'supervised':
@@ -9,3 +10,5 @@ def load_method(method_name, model):
         return RotNet(model)
     elif method_name == 'simclr':
         return SimCLR(model)
+    elif method_name == 'moco':
+        return MoCo(model)

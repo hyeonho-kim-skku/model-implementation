@@ -16,7 +16,8 @@ def train(args, method, optimizer, trainloader, writer, epoch):
     
     train_loss = 0.0
     for batch in trainloader:
-        # simclr
+        # 분기 필요
+        # simclr, moco
         (x1, x2), label = batch
         batch = ((x1.to(device), x2.to(device)), label.to(device))
         # batch = tuple(b.to(device) for b in batch)
@@ -29,7 +30,7 @@ def train(args, method, optimizer, trainloader, writer, epoch):
 
         train_loss += loss.item()
     
-    print(f'Epoch {epoch} - Train Loss: {train_loss/len(trainloader):.4f}')
+    print(f'[Epoch {epoch}] - Train Loss: {train_loss/len(trainloader):.4f}')
     writer.add_scalar('train_loss',train_loss/len(trainloader),epoch)
 
 def test(args, testloader, method, epoch, writer):
@@ -68,7 +69,7 @@ def save_ckpt(args, model, acc, epoch, suffix):
         'epoch': epoch
     }
 
-    torch.save(state, './checkpoint/' + args.model + suffix + '_ckpt.pth')
+    torch.save(state, './checkpoint/' + args.method + '_' + args.model + suffix + '_ckpt.pth')
 
 def _main(args):
     model = load_model(args.model)
@@ -78,11 +79,12 @@ def _main(args):
     knn_trainloader = load_dataset("knn_train", args.batch_size) # 나중에 리팩토링
 
     method = load_method(args.method, model)
-    # criterion = load_criterion(args.criterion, args.batch_size)
+    method.to(device)
+    
     optimizer = load_optimizer(args.optimizer, model, args.lr, args.weight_decay, args.momentum, args.nesterov)
     scheduler = load_scheduler(args.scheduler, optimizer, args.num_epochs)
 
-    writer = SummaryWriter('./runs/' + args.model)
+    writer = SummaryWriter('./runs/' + args.method + '_' + args.model)
 
     for epoch in range(args.num_epochs):
         train(args, method, optimizer, trainloader, writer, epoch)
@@ -102,6 +104,7 @@ def _main(args):
         # supervised learning일 때는 classification.
         else:
             test(args, testloader, method, epoch, writer)
+        
         scheduler.step()
     
     writer.close()
@@ -150,4 +153,6 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_classifier --dataset=CIFAR1
 CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr --method=simclr --dataset=CIFAR10_SimCLR --num_epochs=10 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
 # simclr pretrained + classifier
 CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr_classifier --dataset=CIFAR10 --num_epochs=100 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
+# moco pretrain (epoch: 200)
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=moco --dataset=CIFAR10_MoCo --num_epochs=200 --batch_size=256 --optimizer=SGD --lr=0.03 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --pretrain
 """
