@@ -23,7 +23,7 @@ def get_base_test_transform():
 
 def get_base_test_loader(batch_size):
     testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=get_base_test_transform())
-    return DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
+    return DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=4)
 
 class SimCLRAugmentation():
     def __init__(self):
@@ -88,19 +88,19 @@ class CIFAR10MoCo(Dataset):
 def load_dataset(dataset_name, batch_size):
     if dataset_name == 'CIFAR10':
         trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=get_base_train_transform())
-        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
+        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=4)
         return trainloader, get_base_test_loader(batch_size)
     elif dataset_name == 'CIFAR10_SimCLR':
         trainset = CIFAR10SimCLR()
-        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2, drop_last=True)
+        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=True)
         return trainloader, get_base_test_loader(batch_size)
     elif dataset_name == 'CIFAR10_MoCo':
         trainset = CIFAR10MoCo()
-        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2, drop_last=True)
+        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=True)
         return trainloader, get_base_test_loader(batch_size)
     elif dataset_name == 'knn_train':
         trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=get_base_test_transform())
-        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
+        trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=4)
         return trainloader
     
 
