@@ -10,7 +10,7 @@ class MoCo(nn.Module):
             dim: feature dimension (default: 128)
             K: queue size; number of negative keys (default: 4096)
             m: momentum coefficient for updating key encoder (default: 0.99)
-            T: temperature parameter for softmax (default: 0.1)
+            T: temperature parameter for softmax (default: 0.2)
         """
         super().__init__()
         
@@ -20,10 +20,11 @@ class MoCo(nn.Module):
 
         self.encoder_q = model # query encoder (trained by gradient)
         feat_dim = self.encoder_q.fc.in_features
+        self.encoder_q.fc = nn.Identity()
         # MoCo
         # self.encoder_q.fc = nn.linear(512*self.encoder_q.block.expansion, 128)
         # MoCo-v2
-        self.encoder_q.fc = nn.Sequential(
+        self.mlp_head_q = nn.Sequential(
             nn.Linear(feat_dim, 2048),
             nn.ReLU(),
             nn.Linear(2048, dim)
@@ -32,8 +33,11 @@ class MoCo(nn.Module):
         self.model = self.encoder_q # train에서 이름 맞추기 위해.
 
         self.encoder_k = copy.deepcopy(self.encoder_q) # key encoder (updated by momentum)
+        self.mlp_head_k = copy.deepcopy(self.mlp_head_q)
 
         for param_k in self.encoder_k.parameters():
+            param_k.requires_grad = False
+        for param_k in self.mlp_head_k.parameters():
             param_k.requires_grad = False
 
         # register_buffer: nn.Module의 함수로, 업데이트되나 학습되지는 않음. 모델 저장, GPU 이동시 함께.
@@ -75,16 +79,20 @@ class MoCo(nn.Module):
     def _momentum_update_key_encoder(self):
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data = self.m*param_k.data + (1. - self.m)*param_q.data
+        for param_q, param_k in zip(self.mlp_head_q.parameters(), self.mlp_head_k.parameters()):
+            param_k.data = self.m*param_k.data + (1. - self.m)*param_q.data
 
     def forward(self, batch):
         (im_q, im_k), _ = batch
 
         q = self.encoder_q(im_q)
+        q = self.mlp_head_q(q)
 
         with torch.no_grad():
             self._momentum_update_key_encoder()
 
             k = self.encoder_k(im_k)
+            k = self.mlp_head_k(k)
 
         q = F.normalize(q, dim=1)
         k = F.normalize(k, dim=1)
