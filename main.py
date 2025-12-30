@@ -5,7 +5,7 @@ import argparse
 from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.nn.functional as F
-from utils import knn_eval, load_optimizer, load_scheduler
+from utils import knn_eval, load_optimizer, load_scheduler, move_to_device
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 best_acc = 0
@@ -16,11 +16,7 @@ def train(args, method, optimizer, trainloader, writer, epoch):
     
     train_loss = 0.0
     for batch in trainloader:
-        # 분기 필요
-        # simclr, moco
-        (x1, x2), label = batch
-        batch = ((x1.to(device), x2.to(device)), label.to(device))
-        # batch = tuple(b.to(device) for b in batch)
+        batch = move_to_device(batch, device)
 
         optimizer.zero_grad()
         loss = method(batch)
@@ -156,5 +152,5 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr_classifier --dataset=CIFAR1
 # moco pretrain (epoch: 200)
 CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=moco --dataset=CIFAR10_MoCo --num_epochs=200 --batch_size=256 --optimizer=SGD --lr=0.03 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --pretrain
 # BYOL (epochs: 300)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=CIFAR10_SimCLR --num_epochs=16 --batch_size=128 --optimizer=SGD --lr=0.03 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=CIFAR10_SimCLR --num_epochs=100 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
 """

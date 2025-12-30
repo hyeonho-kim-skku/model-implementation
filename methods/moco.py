@@ -55,6 +55,7 @@ class MoCo(nn.Module):
         # positive similarity.
         logits_pos = torch.einsum('nc,nc->n',[q, k]).unsqueeze(-1) # (B, 1)
         # negative similarities.
+        # tensor의 matrix multiplication 연산은 참조를 갖고있기 때문에 clone해야함.
         logits_neg = torch.einsum('nc,ck->nk',[q, queue.clone().detach()]) # (B, K)
         # 둘을 합침.
         logits = torch.cat([logits_pos, logits_neg], dim = 1) # (B, K+1)
