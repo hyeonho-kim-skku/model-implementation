@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import copy
 
 class MoCo(nn.Module):
-    def __init__(self, model, dim=128, K=4096, m=0.99, T=0.1):
+    def __init__(self, model, dim=128, K=4096, m=0.99, T=0.2):
         """
             model: base encoder (e.g., ResNet with projection head)
             dim: feature dimension (default: 128)
