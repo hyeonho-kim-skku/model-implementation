@@ -10,11 +10,21 @@ class SimSiam(nn.Module):
         feat_dim = self.backbone.fc.in_features
         self.backbone.fc = nn.Identity()
 
-        # 3-layer projector.
+        # 3-layer projector. (ImageNet)
+        # self.projector = nn.Sequential(
+        #     nn.Linear(feat_dim, feat_dim, bias=False),
+        #     nn.BatchNorm1d(feat_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(feat_dim, feat_dim, bias=False),
+        #     nn.BatchNorm1d(feat_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(feat_dim, dim, bias=False),
+        #     nn.BatchNorm1d(dim, affine=False)
+        # )
+
+        # 2-layer projector (CIFAR-10)
+        # Page:10, D. CIFAR Experiments
         self.projector = nn.Sequential(
-            nn.Linear(feat_dim, feat_dim, bias=False),
-            nn.BatchNorm1d(feat_dim),
-            nn.ReLU(),
             nn.Linear(feat_dim, feat_dim, bias=False),
             nn.BatchNorm1d(feat_dim),
             nn.ReLU(),
