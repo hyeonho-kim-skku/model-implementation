@@ -152,5 +152,7 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr_classifier --dataset=CIFAR1
 # moco pretrain (epoch: 200)
 CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=moco --dataset=CIFAR10_MoCo --num_epochs=200 --batch_size=256 --optimizer=SGD --lr=0.03 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --pretrain
 # BYOL (epochs: 300)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=CIFAR10_SimCLR --num_epochs=100 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=CIFAR10_SimCLR --num_epochs=50 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
+# SimSiam (epochs: 800)
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simsiam --dataset=CIFAR10_MoCo --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=0.0005 --scheduler=CosineAnnealingLR --pretrain
 """

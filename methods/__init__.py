@@ -1,8 +1,9 @@
-from .supervised_learning import *
-from .rotnet import *
-from .simclr import *
-from .moco import *
+from .supervised_learning import SL
+from .rotnet import RotNet
+from .simclr import SimCLR
+from .moco import MoCo
 from .byol import BYOL
+from .simsiam import SimSiam
 
 def load_method(method_name, model):
     if method_name == 'supervised':
@@ -15,3 +16,5 @@ def load_method(method_name, model):
         return MoCo(model)
     elif method_name == 'byol':
         return BYOL(model)
+    elif method_name == 'simsiam':
+        return SimSiam(model)
