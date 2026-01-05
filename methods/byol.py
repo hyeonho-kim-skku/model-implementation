@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import copy
 
 class BYOL(nn.Module):
-    def __init__(self, model, dim=256, hidden_dim=4096, m=0.996):
+    def __init__(self, model, dim=256, hidden_dim=4096, m=0.99):
         super().__init__()
 
         self.m = m
@@ -56,10 +56,10 @@ class BYOL(nn.Module):
     def _calculate_loss(self, predictor, projector_target):
         # Normalize
         predictor = F.normalize(predictor, dim=-1)
-        projector_target = F.normalize(projector_target, dim=-1)
+        projector_target = F.normalize(projector_target, dim=1)
         
         # Loss: 2 - 2 * cosine_similarity
-        return 2 - 2*(predictor*projector_target).sum(dim=-1)
+        return 2 - 2*(predictor*projector_target).sum(dim=1)
 
     def forward(self, batch):
         (view1, view2), _ = batch
