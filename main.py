@@ -1,4 +1,4 @@
-from datasets import load_dataset
+from datasets import get_loader
 from models import load_model
 from methods import load_method
 import argparse
@@ -71,8 +71,12 @@ def _main(args):
     model = load_model(args.model)
     model.to(device)
     
-    trainloader, testloader = load_dataset(args.dataset, args.batch_size)
-    knn_trainloader = load_dataset("knn_train", args.batch_size) # 나중에 리팩토링
+    # trainloader, testloader = load_dataset(args.dataset, args.batch_size)
+    trainloader = get_loader(args.dataset, args.batch_size, args.mode, train=True, shuffle=True, drop_last=True)
+    testloader = get_loader(args.dataset, args.batch_size, 'test', train=False, shuffle=False, drop_last=False)
+    knn_trainloader = None
+    if args.mode == 'ssl':
+        knn_trainloader = get_loader(args.dataset, args.batch_size, 'test', train=True, shuffle=False, drop_last=False)
 
     method = load_method(args.method, model)
     method.to(device)
@@ -85,8 +89,8 @@ def _main(args):
     for epoch in range(args.num_epochs):
         train(args, method, optimizer, trainloader, writer, epoch)
 
-        # pretrain일때는 knn evaluation.
-        if args.pretrain:
+        # ssl 일때는 knn evaluation.
+        if args.mode == 'ssl':
             if epoch%5 == 0: # 5 에폭마다 knn_eval 진행.
                 knn_acc = knn_eval(model, knn_trainloader, testloader, device)
 
@@ -110,7 +114,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str)
     parser.add_argument('--method', type=str)
-    parser.add_argument('--dataset', type=str, default='CIFAR10')
+    parser.add_argument('--dataset', type=str)
     parser.add_argument('--num_epochs', type=int)
     parser.add_argument('--batch_size', type=int)
     # parser.add_argument('--criterion', type=str, default='crossentropyloss')
@@ -120,7 +124,7 @@ if __name__ == "__main__":
     parser.add_argument('--weight_decay', type=float, default=0.0001)
     parser.add_argument('--scheduler', type=str)
     parser.add_argument('--nesterov', action='store_true') # --nesterov 적으면 True, 적지않으면 False 동작.
-    parser.add_argument('--pretrain', action='store_true')
+    parser.add_argument('--mode', type=str)
     args = parser.parse_args()
     _main(args)
 
@@ -131,28 +135,18 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=vit --num_epochs=400 --batch_size=
 CUDA_VISIBLE_DEVICES=7 python main.py --model=mlp_mixer --num_epochs=400 --batch_size=128 --optimizer=AdamW --lr=0.001 --weight_decay=0.1 --scheduler=CosineAnnealingLR
 CUDA_VISIBLE_DEVICES=7 python main.py --model=conv_mixer --num_epochs=200 --batch_size=128 --optimizer=AdamW --lr=0.001 --weight_decay=1e-3 --scheduler=CosineAnnealingLR
 CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10_rotnet --num_epochs=200 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
-# rotnet pretrain
-CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10 --num_epochs=200 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
-# rotnet pretrained + classifier
-CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_classifier --dataset=CIFAR10 --num_epochs=100 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
-# simclr pretrain
-CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr --method=simclr --dataset=CIFAR10_SimCLR --num_epochs=300 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
 """
 
 """ test command
 CUDA_VISIBLE_DEVICES=7 python main.py --model=fractalnet --num_epochs=10 --batch_size=100 --lr=0.02 --scheduler=MultiStepLR
-# rotnet pretrain
-CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10 --num_epochs=10 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
-# rotnet pretrained + classifier
-CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_classifier --dataset=CIFAR10 --num_epochs=10 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
-# simclr pretrain
-CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr --method=simclr --dataset=CIFAR10_SimCLR --num_epochs=10 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
-# simclr pretrained + classifier
-CUDA_VISIBLE_DEVICES=7 python main.py --model=simclr_classifier --dataset=CIFAR10 --num_epochs=100 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
-# moco pretrain (epoch: 200)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=moco --dataset=CIFAR10_MoCo --num_epochs=200 --batch_size=256 --optimizer=SGD --lr=0.03 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --pretrain
-# BYOL (epochs: 300)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=CIFAR10_SimCLR --num_epochs=50 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --pretrain
-# SimSiam (epochs: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simsiam --dataset=CIFAR10_MoCo --num_epochs=100 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=0.0005 --scheduler=CosineAnnealingLR --pretrain
+# rotnet (epochs: 200)
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=rotnet --dataset=cifar10 --num_epochs=200 --batch_size=128 --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
+# simclr (epochs: 300)
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simclr --dataset=cifar10 --num_epochs=300 --batch_size=512 --optimizer=AdamW --lr=3e-4 --momentum=0.9 --weight_decay=1e-4 --scheduler=CosineAnnealingLR --mode=ssl
+# moco (epoch: 200)
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=moco --dataset=cifar10 --num_epochs=200 --batch_size=256 --optimizer=SGD --lr=0.03 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --mode=ssl
+# byol (epochs: 800)
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --mode=ssl
+# simsiam (epochs: 800)
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simsiam --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=0.0005 --scheduler=CosineAnnealingLR --mode=ssl
 """
