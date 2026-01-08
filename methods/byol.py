@@ -53,27 +53,27 @@ class BYOL(nn.Module):
         for param_online, param_target in zip(self.projector_online.parameters(), self.projector_target.parameters()):
             param_target.data = (self.m * param_target.data) + ((1. - self.m) * param_online.data)
 
-    def _calculate_loss(self, predictor, projector_target):
+    def _calculate_loss(self, q, z_target):
         # Normalize
-        predictor = F.normalize(predictor, dim=-1)
-        projector_target = F.normalize(projector_target, dim=1)
-        
+        q = F.normalize(q, dim=-1)
+        z_target = F.normalize(z_target, dim=1)
+
         # Loss: 2 - 2 * cosine_similarity
-        return 2 - 2*(predictor*projector_target).sum(dim=1)
+        return 2 - 2*(q*z_target).sum(dim=1)
 
     def forward(self, batch):
         (view1, view2), _ = batch
 
         # Online network forward
         # View 1
-        v1_encoder_online = self.encoder_online(view1)
-        v1_projector_online = self.projector_online(v1_encoder_online)
-        v1_predictor = self.predictor(v1_projector_online)
+        y1_online = self.encoder_online(view1)
+        z1_online = self.projector_online(y1_online)
+        q1 = self.predictor(z1_online)
 
         # View 2
-        v2_encoder_online = self.encoder_online(view2)
-        v2_projector_online = self.projector_online(v2_encoder_online)
-        v2_predictor = self.predictor(v2_projector_online)
+        y2_online = self.encoder_online(view2)
+        z2_online = self.projector_online(y2_online)
+        q2 = self.predictor(z2_online)
 
         # Target network forward
         with torch.no_grad():
@@ -81,17 +81,16 @@ class BYOL(nn.Module):
             self._update_target_network()
 
             # View 1
-            v1_encoder_target = self.encoder_target(view1)
-            v1_projector_target = self.projector_target(v1_encoder_target)
+            y1_target = self.encoder_target(view1)
+            z1_target = self.projector_target(y1_target)
 
             # View 2
-            v2_encoder_target = self.encoder_target(view2)
-            v2_projector_target = self.projector_target(v2_encoder_target)
+            y2_target = self.encoder_target(view2)
+            z2_target = self.projector_target(y2_target)
 
-        # Compute loss: v1_predictor predicts v2_projector_target and vice versa
-        loss1 = self._calculate_loss(v1_predictor, v2_projector_target)
-        loss2 = self._calculate_loss(v2_predictor, v1_projector_target)
-
+        # Compute loss: q1, z2_target and vice versa
+        loss1 = self._calculate_loss(q1, z2_target)
+        loss2 = self._calculate_loss(q2, z1_target)
         # Mean loss
         loss = (loss1 + loss2).mean()
 
