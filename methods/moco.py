@@ -56,21 +56,30 @@ class MoCo(nn.Module):
         self.queue_ptr[0] = (ptr+batch_size) % self.K
 
     def contrastive_loss(self, q, k, queue):
-        # positive similarity.
-        logits_pos = torch.einsum('nc,nc->n',[q, k]).unsqueeze(-1) # (B, 1)
-        # negative similarities.
-        # tensor의 matrix multiplication 연산은 참조를 갖고있기 때문에 clone해야함.
-        logits_neg = torch.einsum('nc,ck->nk',[q, queue.clone().detach()]) # (B, K)
-        # 둘을 합침.
-        logits = torch.cat([logits_pos, logits_neg], dim = 1) # (B, K+1)
+        batch_size = q.shape[0]
 
-        # temprature 적용.
+        # 1. In-batch similarity (배치 내 비교): (N, N)
+        # q(nc)와 배치의 k(mc)를 내적
+        # - 대각선(n=m): Positive Pair (정답)
+        # - 비대각선(n!=m): In-batch Negative (오답)
+        logits_batch = torch.einsum('nc,mc->nm',[q, k])
+        
+        # 2. Queue similarity (큐와 비교): (N, K)
+        # q(nc)와 큐의 queue(ck)를 내적
+        # - 큐에 있는 모든 건 Negative (오답)
+        logits_queue = torch.einsum('nc,ck->nk',[q, queue.clone().detach()])
+
+        # 3. Concatenate: (N, N + K)
+        logits = torch.cat([logits_batch, logits_queue], dim = 1)
+
+        # 4. Temperature 적용
         logits /= self.T
 
-        # label(positive)는 모두 0.
-        labels = torch.zeros(logits.shape[0], dtype=torch.long, device=logits.device)
+        # 5. Labels 생성
+        # logits_batch(앞부분)의 대각선이 정답
+        labels = torch.arange(batch_size, dtype=torch.long, device=logits.device)
 
-        # loss 계산.
+        # 6. Loss 계산
         loss = F.cross_entropy(logits, labels)
 
         return loss
