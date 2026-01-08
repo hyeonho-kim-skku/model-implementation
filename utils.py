@@ -18,6 +18,7 @@ def load_scheduler(scheduler_name, optimizer, num_epochs):
 
 @torch.no_grad()
 def extract_features(model, dataloader, device):
+    """모델에서 Feature와 Label을 추출하여 CPU 텐서로 반환합니다."""
     model.eval()
     feats, labels = [], []
     for x, y in dataloader:
@@ -26,26 +27,51 @@ def extract_features(model, dataloader, device):
         h = model.forward_features(x)
         feats.append(h.cpu())
         labels.append(y.cpu())
+
     feats = torch.cat(feats, dim=0) 
     labels = torch.cat(labels, dim=0)
     return feats, labels
 
 @torch.no_grad()
-def knn_1nn_top1(train_feats, train_labels, test_feats, test_labels):
-    # cosine similarity based knn
-    train_feats = F.normalize(train_feats, dim=1)
-    test_feats = F.normalize(test_feats, dim=1)
+def knn_monitor_k1(train_features, train_labels, test_features, test_labels, device, chunk_size):
+    """
+    1-NN 분류기로 Test Accuracy를 계산합니다.
+    Memory Efficient Implementation (Chunking)
+    """
+    # Train feature를 GPU로 이동 및 정규화
+    train_features = train_features.to(device)
+    train_features = F.normalize(train_features, dim=1).t()  # [Dim, N_train]
+    train_labels = train_labels.to(device)
 
-    sim = torch.matmul(test_feats, train_feats.transpose(0,1)) # [N_test, N_train]
-    idx = sim.argmax(dim=1) # [N_test] 가장 유사도가 높은 train feature의 인덱스.
-    pred = train_labels[idx] # [N_test] 예측한 label.
-    acc = (pred == test_labels).float().mean().item() * 100.0
-    return acc
+    num_test_images = test_labels.shape[0]
+    total_top1 = 0.0
+
+    # Test feature를 chunk 단위로 처리
+    for idx in range(0, num_test_images, chunk_size):
+        end_idx = min(idx + chunk_size, num_test_images)
+
+        # 현재 Chunk 데이터를 GPU로 이동
+        chunk_test_features = test_features[idx:end_idx].to(device)  # [chunk, Dim]
+        chunk_test_labels = test_labels[idx:end_idx].to(device)
+
+        # 정규화 및 유사도 계산
+        chunk_test_features = F.normalize(chunk_test_features, dim=1)
+        sim = torch.matmul(chunk_test_features, train_features)  # [chunk, N_train]
+        
+        # 가장 유사한 train feature의 인덱스 추출 및 해당 label 예측
+        pred_indices = sim.argmax(dim=1)  # [chunk]
+        pred_labels = train_labels[pred_indices]  # [chunk]
+
+        # 정확한 예측 개수 누적
+        total_top1 += (pred_labels == chunk_test_labels).float().sum().item()
+
+    return total_top1 / num_test_images * 100.0
 
 def knn_eval(model, trainloader, testloader, device):
     train_feats, train_labels = extract_features(model, trainloader, device)
     test_feats, test_labels = extract_features(model, testloader, device)
-    acc = knn_1nn_top1(train_feats, train_labels, test_feats, test_labels)
+    
+    acc = knn_monitor_k1(train_feats, train_labels, test_feats, test_labels, device, chunk_size=1024)
     return acc
 
 def move_to_device(batch, device):
