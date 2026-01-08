@@ -9,7 +9,6 @@ from .vit import *
 from .mlp_mixer import *
 from .conv_mixer import *
 from .rotnet import *
-from .simclr import *
 
 def load_model(model, **kwargs):
     if model == 'fractalnet':

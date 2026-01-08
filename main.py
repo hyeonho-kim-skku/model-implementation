@@ -139,9 +139,9 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10_
 
 """ test command
 CUDA_VISIBLE_DEVICES=7 python main.py --model=fractalnet --num_epochs=10 --batch_size=100 --lr=0.02 --scheduler=MultiStepLR
-# rotnet (epochs: 200)
+# rotnet (epochs: 800)
 CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=rotnet --dataset=cifar10 --num_epochs=200 --batch_size=128 --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
-# simclr (epochs: 300)
+# simclr (epochs: 800)
 CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simclr --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.6 --momentum=0.9 --weight_decay=1e-6 --scheduler=CosineAnnealingLR --mode=ssl
 # moco (epoch: 800)
 CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=moco --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --mode=ssl
