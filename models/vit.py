@@ -105,7 +105,7 @@ class ViT(nn.Module):
             TransformerBlock(dim, heads, dim_head, mlp_dim, dropout) for _ in range(depth)
         )
 
-        self.mlp_head = nn.Linear(dim, num_classes)
+        self.fc = nn.Linear(dim, num_classes)
     
     # CLS 토큰을 이용한 특징 추출 부분
     def forward_features(self, x):
@@ -127,7 +127,7 @@ class ViT(nn.Module):
     
     def forward(self, x):
         x = self.forward_features(x)
-        x = self.mlp_head(x)
+        x = self.fc(x)
         return x
     
 def ViT_tiny():
