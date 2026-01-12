@@ -107,10 +107,11 @@ class ViT(nn.Module):
 
         self.mlp_head = nn.Linear(dim, num_classes)
     
-    def forward(self, img):
-        batch_size = img.shape[0]
-        
-        x = self.to_patch_embedding(img) # [B, C, H, W] -> [B, num_patches, dim]
+    # CLS 토큰을 이용한 특징 추출 부분
+    def forward_features(self, x):
+        batch_size = x.shape[0]
+
+        x = self.to_patch_embedding(x) # [B, C, H, W] -> [B, num_patches, dim]
 
         cls_tokens = repeat(self.cls_token, '1 d -> b 1 d', b = batch_size) # [1, dim] -> [B, 1, dim]
         x = torch.cat((cls_tokens, x), dim=1) # [B, num_patches + 1, dim]
@@ -122,6 +123,10 @@ class ViT(nn.Module):
             x = block(x)
 
         x = x[:,0] # CLS 토큰만 가져옴.
+        return x
+    
+    def forward(self, x):
+        x = self.forward_features(x)
         x = self.mlp_head(x)
         return x
     
