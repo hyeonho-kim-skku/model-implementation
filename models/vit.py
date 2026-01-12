@@ -124,3 +124,18 @@ class ViT(nn.Module):
         x = x[:,0] # CLS 토큰만 가져옴.
         x = self.mlp_head(x)
         return x
+    
+def ViT_tiny():
+    return ViT(
+        image_size = (32, 32),
+        patch_size = (4, 4),
+        channels = 3,
+        dim = 192,
+        depth = 12,
+        heads = 3,
+        dim_head = 64,
+        mlp_dim = 768,
+        emb_dropout = 0.1,
+        dropout = 0.1,
+        num_classes = 10
+    )
