@@ -24,16 +24,33 @@ class TwoCropTransform:
         v2 = self.transform(x)
         return [v1, v2]
 
+class MultiCropTransform:
+    """1개의 image를 2개의 global crop과 여러 개의 local crop으로 변환"""
+    def __init__(self, global_transform, local_transform, local_crops_number=8):
+        self.global_transform = global_transform
+        self.local_transform = local_transform
+        self.local_crops_number = local_crops_number
+    
+    def __call__(self, x):
+        crops = []
+        # Two global crops - 32x32
+        crops.append(self.global_transform(x))
+        crops.append(self.global_transform(x))
+        
+        # Multiple local crops - 16x16
+        for _ in range(self.local_crops_number):
+            crops.append(self.local_transform(x))
+        return crops
+
 def get_transform(dataset_name, mode):
     """
     dataset_name (str): 'cifar10' or ...
-    mode (str): 'supervised', 'ssl', 'test'
+    mode (str): 'supervised', 'two_crop', 'multi_crop', 'test'
     """
     config = CONFIG[dataset_name]
     img_size = config['size']
 
-    # 공통 후처리 (모든 모드 공통)
-    common_transforms = [
+    normalize = [
         transforms.ToTensor(),
         transforms.Normalize(mean=config['mean'], std=config['std'])
     ]
@@ -44,8 +61,8 @@ def get_transform(dataset_name, mode):
             transforms.RandomResizedCrop(img_size), # default scale = (0.08, 1.0)
             transforms.RandomHorizontalFlip() # default p=0.5
         ]
-        return transforms.Compose(augmentations + common_transforms)
-    elif mode == 'ssl':
+        return transforms.Compose(augmentations + normalize)
+    elif mode == 'two_crop':
         augmentations = [
             transforms.RandomResizedCrop(img_size, scale=(0.2, 1.0)),
             transforms.RandomHorizontalFlip(),
@@ -58,10 +75,28 @@ def get_transform(dataset_name, mode):
             kernel_size = int(img_size * 0.1)
             if kernel_size % 2 == 0: kernel_size += 1
             augmentations.append(transforms.RandomApply([transforms.GaussianBlur(kernel_size=kernel_size, sigma=(0.1, 2.0))], p=blur_prob))
-        return TwoCropTransform(transforms.Compose(augmentations + common_transforms))
+        return TwoCropTransform(transforms.Compose(augmentations + normalize))
+    elif mode == 'multi_crop':
+        flip_color_gray = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+            transforms.RandomGrayscale(p=0.2)
+        ])
+
+        global_transform = transforms.Compose([
+            transforms.RandomResizedCrop(img_size, scale=(0.4, 1.0), interpolation=transforms.InterpolationMode.BICUBIC),
+            flip_color_gray,
+        ] + normalize)
+
+        local_transform = transforms.Compose([
+            transforms.RandomResizedCrop(int(img_size * 0.5), scale=(0.2, 0.4), interpolation=transforms.InterpolationMode.BICUBIC),
+            flip_color_gray,
+        ] + normalize)
+
+        return MultiCropTransform(global_transform, local_transform, local_crops_number=4)
     elif mode == 'test':
-        return transforms.Compose(common_transforms)
-    
+        return transforms.Compose(normalize)
+
 def get_loader(dataset_name, batch_size, mode, train, shuffle, drop_last, num_workers=4, data_root='./data'):
     # Transform 생성
     transform = get_transform(dataset_name, mode)
