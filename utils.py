@@ -76,9 +76,27 @@ def knn_eval(model, trainloader, testloader, device):
 
 def move_to_device(batch, device):
     """배치를 device로 이동."""
-    # contrastive batch: [[x1, x2], label]. x1, x2, label: (batch_size, 3, 32, 32) tensor
-    if isinstance(batch[0], (list, tuple)):  
-        (x1, x2), label = batch
-        return ((x1.to(device), x2.to(device)), label.to(device))
-    else:  # supervised: (images, labels)
-        return tuple(b.to(device) for b in batch)
+    inputs, labels = batch
+
+    # 1. Multi-Crop or Two-Crop: inputs가 list
+    # Two-Crop batch: [[x1, x2], label]
+    # Multi-Crop batch: [[x1, x2, x3, ...], label]
+    # x, label: (batch_size, 3, 32, 32) tensor
+    if isinstance(inputs, list):  
+        inputs = [x.to(device) for x in inputs]
+    # 2. Supervised learning: inputs가 tensor
+    else:
+        inputs = inputs.to(device)
+
+    labels = labels.to(device)
+    
+    return inputs, labels
+
+# def move_to_device(batch, device):
+#     """배치를 device로 이동."""
+#     # contrastive batch: [[x1, x2], label]. x1, x2, label: (batch_size, 3, 32, 32) tensor
+#     if isinstance(batch[0], (list, tuple)):  
+#         (x1, x2), label = batch
+#         return ((x1.to(device), x2.to(device)), label.to(device))
+#     else:  # supervised: (images, labels)
+#         return tuple(b.to(device) for b in batch)
