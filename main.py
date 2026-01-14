@@ -75,7 +75,7 @@ def _main(args):
     trainloader = get_loader(args.dataset, args.batch_size, args.mode, train=True, shuffle=True, drop_last=True)
     testloader = get_loader(args.dataset, args.batch_size, 'test', train=False, shuffle=False, drop_last=False)
     knn_trainloader = None
-    if args.mode == 'ssl':
+    if args.mode == 'two_crop' or args.mode == 'multi_crop':
         knn_trainloader = get_loader(args.dataset, args.batch_size, 'test', train=True, shuffle=False, drop_last=False)
 
     method = load_method(args.method, model)
@@ -90,7 +90,7 @@ def _main(args):
         train(args, method, optimizer, trainloader, writer, epoch)
 
         # ssl 일때는 knn evaluation.
-        if args.mode == 'ssl':
+        if args.mode == 'two_crop' or args.mode == 'multi_crop':
             if epoch%5 == 0: # 5 에폭마다 knn_eval 진행.
                 knn_acc = knn_eval(model, knn_trainloader, testloader, device)
 
@@ -142,11 +142,13 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=fractalnet --num_epochs=10 --batch
 # rotnet (epochs: 800)
 CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=rotnet --dataset=cifar10 --num_epochs=200 --batch_size=128 --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
 # simclr (epochs: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simclr --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.6 --momentum=0.9 --weight_decay=1e-6 --scheduler=CosineAnnealingLR --mode=ssl
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simclr --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.6 --momentum=0.9 --weight_decay=1e-6 --scheduler=CosineAnnealingLR --mode=two_crop
 # moco (epoch: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=moco --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --mode=ssl
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=moco --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --mode=two_crop
 # byol (epochs: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --mode=ssl
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --mode=two_crop
 # simsiam (epochs: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simsiam --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=0.0005 --scheduler=CosineAnnealingLR --mode=ssl
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simsiam --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=0.0005 --scheduler=CosineAnnealingLR --mode=two_crop
+# dino (epochs: 400)
+CUDA_VISIBLE_DEVICES=7 python main.py --model=vit_tiny --method=dino --dataset=cifar10 --num_epochs=400 --batch_size=256 --optimizer=AdamW --lr=0.0005 --weight_decay=0.04 --scheduler=CosineAnnealingLR --mode=multi_crop
 """

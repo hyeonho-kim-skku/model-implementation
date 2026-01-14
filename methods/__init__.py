@@ -4,6 +4,7 @@ from .simclr import SimCLR
 from .moco import MoCo
 from .byol import BYOL
 from .simsiam import SimSiam
+from .dino import DINO
 
 def load_method(method_name, model):
     if method_name == 'supervised':
@@ -18,3 +19,5 @@ def load_method(method_name, model):
         return BYOL(model)
     elif method_name == 'simsiam':
         return SimSiam(model)
+    elif method_name == 'dino':
+        return DINO(model)

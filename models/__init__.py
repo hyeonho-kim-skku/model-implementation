@@ -41,3 +41,5 @@ def load_model(model, **kwargs):
         return ResNet18()
     elif model == 'resent50':
         return ResNet50()
+    elif model == 'vit_tiny':
+        return vit_tiny()
