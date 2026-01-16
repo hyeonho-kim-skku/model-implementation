@@ -152,4 +152,6 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=c
 CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simsiam --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=0.0005 --scheduler=CosineAnnealingLR --mode=two_crop
 # dino (epochs: 400)
 CUDA_VISIBLE_DEVICES=7 python main.py --model=vit_tiny --method=dino --dataset=cifar10 --num_epochs=400 --batch_size=256 --optimizer=AdamW --lr=0.0005 --weight_decay=0.04 --scheduler=CosineAnnealingLR --mode=multi_crop
+# swav (epochs: 400)
+CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=swav --dataset=cifar10 --num_epochs=400 --batch_size=256 --optimizer=SGD --lr=0.3 --momentum=0.9 --weight_decay=1e-6 --scheduler=CosineAnnealingLR --mode=multi_crop --warmup_epochs=10
 """
