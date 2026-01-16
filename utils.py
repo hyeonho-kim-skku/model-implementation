@@ -59,11 +59,9 @@ def knn_monitor_k1(train_features, train_labels, test_features, test_labels, dev
 
     # Test feature를 chunk 단위로 처리
     for idx in range(0, num_test_images, chunk_size):
-        end_idx = min(idx + chunk_size, num_test_images)
-
         # 현재 Chunk 데이터를 GPU로 이동
-        chunk_test_features = test_features[idx:end_idx].to(device)  # [chunk, Dim]
-        chunk_test_labels = test_labels[idx:end_idx].to(device)
+        chunk_test_features = test_features[idx:idx+chunk_size].to(device)  # [chunk, Dim]
+        chunk_test_labels = test_labels[idx:idx+chunk_size].to(device)
 
         # 정규화 및 유사도 계산
         chunk_test_features = F.normalize(chunk_test_features, dim=1)
