@@ -82,7 +82,7 @@ def _main(args):
     method.to(device)
     
     optimizer = load_optimizer(args.optimizer, method, args.lr, args.weight_decay, args.momentum, args.nesterov)
-    scheduler = load_scheduler(args.scheduler, optimizer, args.num_epochs)
+    scheduler = load_scheduler(args.scheduler, optimizer, args.num_epochs, args.warmup_epochs)
 
     writer = SummaryWriter('./runs/' + args.method + '_' + args.model)
 
@@ -125,6 +125,7 @@ if __name__ == "__main__":
     parser.add_argument('--scheduler', type=str)
     parser.add_argument('--nesterov', action='store_true') # --nesterov 적으면 True, 적지않으면 False 동작.
     parser.add_argument('--mode', type=str)
+    parser.add_argument('--warmup_epochs', type=int, default=0)
     args = parser.parse_args()
     _main(args)
 

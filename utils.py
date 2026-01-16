@@ -1,6 +1,7 @@
 # ntxent.py
 import torch
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingLR, LinearLR, SequentialLR
 
 def load_optimizer(optimizer_name, model, lr, weight_decay, momentum=None, nesterov=False):
     params = (p for p in model.parameters() if p.requires_grad) # for문 돌면서, requires_grad=True인 것들만 추출.
@@ -9,12 +10,22 @@ def load_optimizer(optimizer_name, model, lr, weight_decay, momentum=None, neste
     if optimizer_name == 'AdamW':
         return torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
 
-def load_scheduler(scheduler_name, optimizer, num_epochs):
+def load_scheduler(scheduler_name, optimizer, num_epochs, warmup_epochs=0):
+    main_epochs = num_epochs - warmup_epochs
+    
     if scheduler_name == 'MultiStepLR':
-        milestones = [int(0.5 * num_epochs), int(0.75 * num_epochs)]  # [50% epoch, 75% ecpoh]
-        return torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
+        milestones = [int(0.5 * num_epochs) - warmup_epochs, int(0.75 * num_epochs) - warmup_epochs]  # [50% epoch, 75% ecpoh]
+        main_scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
     elif scheduler_name == 'CosineAnnealingLR':
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, num_epochs)
+        main_scheduler = CosineAnnealingLR(optimizer, main_epochs)
+
+    if warmup_epochs > 0:
+        warmup_scheduler = LinearLR(optimizer, start_factor=0.01, total_iters=warmup_epochs)
+
+        scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
+        return scheduler
+    else:
+        return main_scheduler
 
 @torch.no_grad()
 def extract_features(model, dataloader, device):
