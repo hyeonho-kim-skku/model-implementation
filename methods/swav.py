@@ -81,7 +81,7 @@ class SwAV(nn.Module):
         # 6. Compute scores (between prototypes and features)
         # linear layer: input @ weight.T (+ bias, now None)
         # features: ((2+V)*B, dim), prototypes.weight: (n_prototypes, dim)
-        scores = self.prototypes(features) # ((2+V)*B, n_prototypes)
+        total_scores = self.prototypes(features) # ((2+V)*B, n_prototypes)
 
         # Use queue when queue is full
         use_queue = False
@@ -91,9 +91,8 @@ class SwAV(nn.Module):
         # 7. Compute assignments for each global crop
         q_list = [] # list of assignments for each global crop
         for i in range(len(global_crops)):
-            # only for global crops (first 2*B samples)
             with torch.no_grad():
-                global_scores = scores[i*bs:(i+1)*bs] # (2*B, n_prototypes)
+                global_scores = total_scores[i*bs:(i+1)*bs] # (B, n_prototypes)
 
                 if use_queue:
                     queue_scores = self.prototypes(self.queue) # (queue_length, n_prototypes)
@@ -113,7 +112,7 @@ class SwAV(nn.Module):
         # 8. Compute loss
         # Cross entropy between assignments (q) and probabilities (p)
         # p: softmax(scores / temperature)
-        log_probs = F.log_softmax(scores / self.temperature, dim=1) # ((2+V)*B, n_prototypes)
+        log_probs = F.log_softmax(total_scores / self.temperature, dim=1) # ((2+V)*B, n_prototypes)
 
         total_loss = 0
         n_loss_terms = 0
@@ -145,7 +144,7 @@ class SwAV(nn.Module):
         B = Q.shape[1] # number of samples to assign
         K = Q.shape[0] # how many prototypes
 
-        # make the matrix sums to 
+        # make the matrix sums to 1
         sum_Q = torch.sum(Q)
         Q /= sum_Q
 
