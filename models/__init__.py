@@ -9,6 +9,7 @@ from .vit import *
 from .mlp_mixer import *
 from .conv_mixer import *
 from .rotnet import *
+from .dino_v2_lora import *
 
 def load_model(model, **kwargs):
     if model == 'fractalnet':
@@ -43,3 +44,7 @@ def load_model(model, **kwargs):
         return ResNet50()
     elif model == 'vit_tiny':
         return vit_tiny()
+    elif model == 'dino_v2_lora':
+        num_classes = kwargs.get('num_classes', 10)
+        rank = kwargs.get('rank', 4)
+        return DINOV2LoRA(num_classes=num_classes, rank=rank)
