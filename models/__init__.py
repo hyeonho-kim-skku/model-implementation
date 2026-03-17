@@ -10,6 +10,7 @@ from .mlp_mixer import *
 from .conv_mixer import *
 from .rotnet import *
 from .dino_v2_lora import *
+from .dinov2_quantized_lora import *
 
 def load_model(model, **kwargs):
     if model == 'fractalnet':
@@ -48,3 +49,5 @@ def load_model(model, **kwargs):
         num_classes = kwargs.get('num_classes', 102)
         rank = kwargs.get('rank', 4)
         return DINOV2LoRA(num_classes=num_classes, rank=rank)
+    elif model == 'dinov2_quantized_lora':
+        return DINOV2QuantizedLoRA()
