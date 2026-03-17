@@ -1,21 +1,21 @@
 import math
+import timm
 import torch
 import torch.nn as nn
 from .lora import LoRA
-from transformers import DINOv2Model
 
 class DINOV2LoRA(nn.Module):
     def __init__(self, num_classes, rank=4):
         super().__init__()
-        self.encoder = DINOv2Model.from_pretrained("facebook/dinov2-base")
+        self.encoder = timm.create_model('vit_small_patch14_dinov2.lvd142m', pretrained=True, img_size=224, num_classes=0)
         for param in self.encoder.parameters():
             param.requires_grad = False
 
         self.w_a = nn.ModuleList()
         self.w_b = nn.ModuleList()
 
-        for block in self.encoder.encoder.layer:
-            w_qkv_linear = block.attention.attention.query_key_value
+        for block in self.encoder.blocks:
+            w_qkv_linear = block.attn.qkv
             dim = w_qkv_linear.in_features
 
             w_a_linear_q, w_b_linear_q = self._create_lora_layer(dim, rank)
@@ -24,7 +24,7 @@ class DINOV2LoRA(nn.Module):
             self.w_a.extend([w_a_linear_q, w_a_linear_v])
             self.w_b.extend([w_b_linear_q, w_b_linear_v])
 
-            block.attention.attention.query_key_value = LoRA(
+            block.attn.qkv = LoRA(
                 qkv=w_qkv_linear,
                 linear_a_q=w_a_linear_q,
                 linear_b_q=w_b_linear_q,
@@ -33,7 +33,8 @@ class DINOV2LoRA(nn.Module):
             )
         
         self._reset_lora_weights()
-        self.classifier = nn.Linear(self.encoder.config.hidden_size, num_classes)
+
+        self.classifier = nn.Linear(self.encoder.embed_dim, num_classes)
 
     def _create_lora_layer(self, dim: int, rank: int):
         w_a = nn.Linear(dim, rank, bias=False)
@@ -47,7 +48,6 @@ class DINOV2LoRA(nn.Module):
             nn.init.zeros_(w_b.weight)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        outputs = self.encoder(x)
-        cls_token = outputs.last_hidden_state[:, 0, :]
+        cls_token = self.encoder(x)
         logits = self.classifier(cls_token)
         return logits
