@@ -11,7 +11,17 @@ CONFIG = {
         'ssl_params' : {
             'blur_prob' : 0.0 # CIFAR-10은 blur 적용하지 않음.
         }
+    },
+    'flower102': {
+        'mean' : (0.485, 0.456, 0.406), # ImageNet과 동일한 mean
+        'std' : (0.229, 0.224, 0.225), # std 사용
+        'size' : 224,
+        'class' : datasets.Flowers102,
+        'ssl_params' : {
+            'blur_prob' : 0.0 # Flower-102는 blur 적용 (논문에서 blur가 성능 향상에 도움된다고 보고됨)
+        }
     }
+
 }
 
 class TwoCropTransform:
@@ -103,7 +113,11 @@ def get_loader(dataset_name, batch_size, mode, train, shuffle, drop_last, num_wo
 
     # DataSet 생성
     dataset_class = CONFIG[dataset_name]['class']
-    dataset = dataset_class(root=data_root, train=train, download=True, transform=transform)
+    if dataset_name == 'flower102':
+        split = 'train' if train else 'test'
+        dataset = dataset_class(root=data_root, split=split, download=True, transform=transform)
+    else:
+        dataset = dataset_class(root=data_root, train=train, download=True, transform=transform)
 
     # DataLoader 생성
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, drop_last=drop_last)
