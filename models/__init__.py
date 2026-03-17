@@ -45,6 +45,6 @@ def load_model(model, **kwargs):
     elif model == 'vit_tiny':
         return vit_tiny()
     elif model == 'dino_v2_lora':
-        num_classes = kwargs.get('num_classes', 10)
+        num_classes = kwargs.get('num_classes', 102)
         rank = kwargs.get('rank', 4)
         return DINOV2LoRA(num_classes=num_classes, rank=rank)
