@@ -20,8 +20,16 @@ CONFIG = {
         'ssl_params' : {
             'blur_prob' : 0.0 # Flower-102는 blur 적용 (논문에서 blur가 성능 향상에 도움된다고 보고됨)
         }
+    },
+    'cifar100': {
+        'mean' : (0.485, 0.456, 0.406), # DINOv2 사전 학습 가중치와 맞추기 위해 ImageNet 통계값 사용
+        'std' : (0.229, 0.224, 0.225),
+        'size' : 224, # DINOv2 입력을 위해 32x32 -> 224x224로 업샘플링
+        'class' : datasets.CIFAR100,
+        'ssl_params' : {
+            'blur_prob' : 0.0 # 작은 이미지를 억지로 키운 것이라 blur는 주지 않는 것이 좋음
+        }
     }
-
 }
 
 class TwoCropTransform:
