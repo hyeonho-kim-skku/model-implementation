@@ -105,7 +105,11 @@ def get_transform(dataset_name, mode):
 
         return MultiCropTransform(global_transform, local_transform, local_crops_number=4)
     elif mode == 'test':
-        return transforms.Compose(normalize)
+        augmentations = [
+            transforms.Resize(256),
+            transforms.CenterCrop(img_size)
+        ]
+        return transforms.Compose(augmentations + normalize)
 
 def get_loader(dataset_name, batch_size, mode, train, shuffle, drop_last, num_workers=4, data_root='./data'):
     # Transform 생성
