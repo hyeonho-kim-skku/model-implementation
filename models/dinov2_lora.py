@@ -17,6 +17,7 @@ class DINOV2LoRA(nn.Module):
         else:
             bnb_config = None
         
+        # Linear layer를 Linear4bit으로 양자화해서 모델을 가져옴.
         self.model = AutoModelForImageClassification.from_pretrained(
             pretrained_model_name,
             num_labels=num_classes,
@@ -27,6 +28,7 @@ class DINOV2LoRA(nn.Module):
         )
 
         if use_quantization:
+            # pretrained model parameter freeze, gradient checkpointing 사용 등
             self.model = prepare_model_for_kbit_training(self.model)
         else:
             for param in self.model.parameters():
