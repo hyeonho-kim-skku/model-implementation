@@ -128,6 +128,11 @@ if __name__ == "__main__":
     parser.add_argument('--nesterov', action='store_true') # --nesterov 적으면 True, 적지않으면 False 동작.
     parser.add_argument('--mode', type=str)
     parser.add_argument('--warmup_epochs', type=int, default=0)
+    parser.add_argument('--use_quantization', action='store_true', help='Use 4-bit quantization for the model')
+    parser.add_argument('--lora_rank', type=int, help='Rank for LoRA adapters')
+    parser.add_argument('--num_classes', type=int, help='Number of classes for classification')
+    parser.add_argument('--pretrained_model', type=str, help='Pre-trained model name')
+
     args = parser.parse_args()
 
     if args.config:
