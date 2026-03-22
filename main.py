@@ -67,7 +67,11 @@ def save_ckpt(args, model, acc, epoch, suffix):
         'epoch': epoch
     }
 
-    torch.save(state, './checkpoint/' + args.method + '_' + args.model + suffix + '_ckpt.pth')
+    quant_suffix = "_quantized" if getattr(args, 'use_quantization', False) else ""
+
+    filename = f'./checkpoint/{args.method}_{args.model}{quant_suffix}{suffix}_ckpt.pth'
+
+    torch.save(state, filename)
 
 def _main(args):
     model = load_model(**vars(args))
@@ -117,7 +121,6 @@ def _main(args):
     
     writer.close()
 
-# 코드수정 없이 argument로만 조정하여 실행하는 것이 목표.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, help='Path to the yaml config file')
@@ -134,7 +137,7 @@ if __name__ == "__main__":
     parser.add_argument('--weight_decay', type=float, default=0.0001)
     parser.add_argument('--scheduler', type=str)
     parser.add_argument('--nesterov', action='store_true') # --nesterov 적으면 True, 적지않으면 False 동작.
-    parser.add_argument('--mode', type=str)
+    parser.add_argument('--mode', type=str, help='augmentation mode')
     parser.add_argument('--warmup_epochs', type=int, default=0)
     parser.add_argument('--use_quantization', action='store_true', help='Use 4-bit quantization for the model')
     parser.add_argument('--lora_rank', type=int, help='Rank for LoRA adapters')
