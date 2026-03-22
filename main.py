@@ -157,5 +157,8 @@ CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=swav --dataset=c
 # dino_v2_lora (epochs: 100)
 CUDA_VISIBLE_DEVICES=7 python main.py --model=dino_v2_lora --method=supervised --dataset=flower102 --num_epochs=10 --batch_size=64 --optimizer=AdamW --lr=0.0005 --weight_decay=0.05 --scheduler=CosineAnnealingLR --mode=supervised
 # dinov2_quantized_lora (epochs: 100)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=dinov2_quantized_lora --method=supervised --dataset=cifar100 --num_epochs=10 --batch_size=64 --optimizer=AdamW --lr=0.0005 --weight_decay=0.05 --scheduler=CosineAnnealingLR --mode=supervised
+CUDA_VISIBLE_DEVICES=6 python main.py --model=dinov2_quantized_lora --method=supervised --dataset=cifar100 --num_epochs=10 --batch_size=64 --optimizer=AdamW --lr=0.0005 --weight_decay=0.05 --scheduler=CosineAnnealingLR --mode=supervised --use_quantization
+
+bash scripts/run.sh 7 configs/dinov2_lora.yaml --use_quantization
+bash scripts/run.sh 6 configs/dinov2_lora.yaml
 """

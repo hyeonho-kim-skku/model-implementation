@@ -1,5 +1,4 @@
 import torch.nn as nn
-import torch
 from utils import *
 from .resnet import *
 from .pre_act_resnet import *
@@ -11,8 +10,11 @@ from .conv_mixer import *
 from .rotnet import *
 from .dino_v2_lora import *
 from .dinov2_quantized_lora import *
+from .dinov2_lora import *
 
-def load_model(model, **kwargs):
+def load_model(**kwargs):
+    model = kwargs.get('model')
+
     if model == 'fractalnet':
         return FractalNet()
     elif model == 'pre_act_resnet':
@@ -49,5 +51,9 @@ def load_model(model, **kwargs):
         num_classes = kwargs.get('num_classes', 102)
         rank = kwargs.get('rank', 4)
         return DINOV2LoRA(num_classes=num_classes, rank=rank)
-    elif model == 'dinov2_quantized_lora':
-        return DINOV2QuantizedLoRA()
+    elif model == 'dinov2_lora':
+        use_quantization = kwargs.get('use_quantization')
+        pretrained_model_name = kwargs.get('pretrained_model_name')
+        num_classes = kwargs.get('num_classes')
+        lora_rank = kwargs.get('lora_rank')
+        return DINOV2LoRA(pretrained_model_name=pretrained_model_name, num_classes=num_classes, lora_rank=lora_rank, use_quantization=use_quantization)
