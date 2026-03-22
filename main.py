@@ -86,7 +86,13 @@ def _main(args):
     optimizer = load_optimizer(args.optimizer, method, args.lr, args.weight_decay, args.momentum, args.nesterov)
     scheduler = load_scheduler(args.scheduler, optimizer, args.num_epochs, args.warmup_epochs)
 
-    writer = SummaryWriter('./runs/' + args.method + '_' + args.model)
+    timezone_kst = datetime.timezone(datetime.timedelta(hours=9))
+    cur_time = datetime.datetime.now(tz=timezone_kst).strftime("%m%d-%H%M%S")
+
+    exp_name = f"{args.model}_{args.dataset}_{args.method}"
+    log_dir = f'./runs/{exp_name}/{cur_time}'
+    
+    writer = SummaryWriter(log_dir)
 
     for epoch in range(args.num_epochs):
         train(args, method, optimizer, trainloader, writer, epoch)
