@@ -112,6 +112,8 @@ def _main(args):
 # 코드수정 없이 argument로만 조정하여 실행하는 것이 목표.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str, help='Path to the yaml config file')
+
     parser.add_argument('--model', type=str)
     parser.add_argument('--method', type=str)
     parser.add_argument('--dataset', type=str)
@@ -127,6 +129,13 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str)
     parser.add_argument('--warmup_epochs', type=int, default=0)
     args = parser.parse_args()
+
+    if args.config:
+        with open(args.config, 'r') as f:
+            config_dict = yaml.safe_load(f)
+        parser.set_defaults(**config_dict)
+        args = parser.parse_args()
+
     _main(args)
 
 """ command
