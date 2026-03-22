@@ -70,7 +70,7 @@ def save_ckpt(args, model, acc, epoch, suffix):
     torch.save(state, './checkpoint/' + args.method + '_' + args.model + suffix + '_ckpt.pth')
 
 def _main(args):
-    model = load_model(args.model)
+    model = load_model(**vars(args))
     model.to(device)
     
     # trainloader, testloader = load_dataset(args.dataset, args.batch_size)
