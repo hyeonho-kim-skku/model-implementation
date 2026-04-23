@@ -43,7 +43,7 @@ def load_model(**kwargs):
         return SimCLRClassifier()
     elif model == 'resnet18':
         return ResNet18()
-    elif model == 'resent50':
+    elif model == 'resnet50':
         return ResNet50()
     elif model == 'vit_tiny':
         return vit_tiny()
