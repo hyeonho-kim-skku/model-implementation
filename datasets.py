@@ -12,7 +12,7 @@ CONFIG = {
             'blur_prob' : 0.0 # CIFAR-10은 blur 적용하지 않음.
         }
     },
-    'flower102': {
+    'flowers102': {
         'mean' : (0.485, 0.456, 0.406), # ImageNet과 동일한 mean
         'std' : (0.229, 0.224, 0.225), # std 사용
         'size' : 224,
@@ -125,7 +125,7 @@ def get_loader(dataset_name, batch_size, mode, train, shuffle, drop_last, num_wo
 
     # DataSet 생성
     dataset_class = CONFIG[dataset_name]['class']
-    if dataset_name == 'flower102':
+    if dataset_name == 'flowers102':
         split = 'train' if train else 'test'
         dataset = dataset_class(root=data_root, split=split, download=True, transform=transform)
     else:
