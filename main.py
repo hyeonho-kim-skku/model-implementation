@@ -9,6 +9,11 @@ import torch
 import torch.nn.functional as F
 from utils import knn_eval, load_optimizer, load_scheduler, move_to_device
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 best_acc = 0
 best_knn_acc = 0
@@ -17,7 +22,11 @@ def train(args, method, optimizer, trainloader, writer, epoch):
     method.model.train()
     
     train_loss = 0.0
-    for batch in trainloader:
+    progress = trainloader
+    if tqdm is not None:
+        progress = tqdm(trainloader, desc=f"Epoch {epoch} [train]", leave=False)
+
+    for step, batch in enumerate(progress, start=1):
         batch = move_to_device(batch, device)
 
         optimizer.zero_grad()
@@ -27,6 +36,9 @@ def train(args, method, optimizer, trainloader, writer, epoch):
         optimizer.step()
 
         train_loss += loss.item()
+
+        if tqdm is not None:
+            progress.set_postfix(loss=f"{train_loss/step:.4f}")
     
     print(f'[Epoch {epoch}] - Train Loss: {train_loss/len(trainloader):.4f}')
     writer.add_scalar('train_loss',train_loss/len(trainloader),epoch)
@@ -38,7 +50,11 @@ def test(args, testloader, method, epoch, writer):
     correct = 0
     total = 0
     with torch.no_grad():
-        for data in testloader:
+        progress = testloader
+        if tqdm is not None:
+            progress = tqdm(testloader, desc=f"Epoch {epoch} [test]", leave=False)
+
+        for step, data in enumerate(progress, start=1):
             images, labels = data[0].to(device), data[1].to(device) # cuda
 
             outputs = method.model(images)
@@ -48,6 +64,12 @@ def test(args, testloader, method, epoch, writer):
             _, predicted = torch.max(outputs, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
+
+            if tqdm is not None:
+                progress.set_postfix(
+                    loss=f"{test_loss/step:.4f}",
+                    acc=f"{100. * correct / total:.2f}"
+                )
 
     acc = 100. * correct / total
     global best_acc
