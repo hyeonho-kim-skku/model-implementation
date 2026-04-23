@@ -213,5 +213,8 @@ data/
 *.tar.gz
 *.tfevents.*
 
-# 백업 파일 무시.
+# ignore backups
 backups/
+
+# ignore pretrained_models
+pretrained_models/
