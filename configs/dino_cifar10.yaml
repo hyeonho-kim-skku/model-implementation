@@ -1,0 +1,13 @@
+model: vit_tiny
+method: dino
+dataset: cifar10
+mode: multi_crop
+num_epochs: 400
+batch_size: 256
+optimizer: AdamW
+lr: 0.0005
+momentum: 0.9
+weight_decay: 0.04
+scheduler: CosineAnnealingLR
+warmup_epochs: 0
+use_quantization: false

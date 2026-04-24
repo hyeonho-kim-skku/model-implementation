@@ -1,0 +1,14 @@
+model: resnet18
+method: rotnet
+dataset: cifar10
+mode: supervised
+num_epochs: 200
+batch_size: 128
+optimizer: SGD
+lr: 0.1
+momentum: 0.9
+weight_decay: 0.0005
+scheduler: MultiStepLR
+nesterov: true
+warmup_epochs: 0
+use_quantization: false

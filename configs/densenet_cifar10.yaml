@@ -1,0 +1,13 @@
+model: densenet
+method: supervised
+dataset: cifar10
+mode: supervised
+num_epochs: 300
+batch_size: 64
+optimizer: SGD
+lr: 0.01
+momentum: 0.9
+weight_decay: 0.0001
+scheduler: MultiStepLR
+warmup_epochs: 0
+use_quantization: false

@@ -1,0 +1,16 @@
+model: dinov2_lora
+method: supervised
+dataset: cifar100
+mode: supervised
+num_epochs: 10
+batch_size: 64
+optimizer: AdamW
+lr: 0.0005
+momentum: 0.9
+weight_decay: 0.05
+scheduler: CosineAnnealingLR
+warmup_epochs: 0
+use_quantization: true
+num_classes: 100
+lora_rank: 8
+pretrained_model_name: facebook/dinov2-small

@@ -1,0 +1,13 @@
+model: resnet18
+method: swav
+dataset: cifar10
+mode: multi_crop
+num_epochs: 400
+batch_size: 256
+optimizer: SGD
+lr: 0.3
+momentum: 0.9
+weight_decay: 0.000001
+scheduler: CosineAnnealingLR
+warmup_epochs: 10
+use_quantization: false

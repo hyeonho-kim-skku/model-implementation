@@ -1,0 +1,13 @@
+model: fractalnet
+method: supervised
+dataset: cifar10
+mode: supervised
+num_epochs: 400
+batch_size: 100
+optimizer: SGD
+lr: 0.02
+momentum: 0.9
+weight_decay: 0.0001
+scheduler: MultiStepLR
+warmup_epochs: 0
+use_quantization: false

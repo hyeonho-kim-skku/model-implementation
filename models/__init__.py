@@ -8,9 +8,8 @@ from .vit import *
 from .mlp_mixer import *
 from .conv_mixer import *
 from .rotnet import *
-from .dino_v2_lora import *
-from .dinov2_quantized_lora import *
-from .dinov2_lora import *
+from .dino_v2_lora import DINOV2LoRA as TimmDINOV2LoRA
+from .dinov2_lora import DINOV2LoRA as HFDINOV2LoRA
 
 def load_model(**kwargs):
     model = kwargs.get('model')
@@ -49,11 +48,11 @@ def load_model(**kwargs):
         return vit_tiny()
     elif model == 'dino_v2_lora':
         num_classes = kwargs.get('num_classes', 102)
-        rank = kwargs.get('rank', 4)
-        return DINOV2LoRA(num_classes=num_classes, rank=rank)
-    elif model == 'dinov2_lora':
-        use_quantization = kwargs.get('use_quantization')
-        pretrained_model_name = kwargs.get('pretrained_model_name')
+        rank = kwargs.get('lora_rank', kwargs.get('rank', 4))
+        return TimmDINOV2LoRA(num_classes=num_classes, rank=rank)
+    elif model == 'dinov2_lora' or model == 'dinov2_quantized_lora':
+        use_quantization = kwargs.get('use_quantization', model == 'dinov2_quantized_lora')
+        pretrained_model_name = kwargs.get('pretrained_model_name', kwargs.get('pretrained_model'))
         num_classes = kwargs.get('num_classes')
         lora_rank = kwargs.get('lora_rank')
-        return DINOV2LoRA(pretrained_model_name=pretrained_model_name, num_classes=num_classes, lora_rank=lora_rank, use_quantization=use_quantization)
+        return HFDINOV2LoRA(pretrained_model_name=pretrained_model_name, num_classes=num_classes, lora_rank=lora_rank, use_quantization=use_quantization)

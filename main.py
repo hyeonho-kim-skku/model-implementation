@@ -162,9 +162,9 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, help='augmentation mode')
     parser.add_argument('--warmup_epochs', type=int, default=0)
     parser.add_argument('--use_quantization', action='store_true', help='Use 4-bit quantization for the model')
-    parser.add_argument('--lora_rank', type=int, help='Rank for LoRA adapters')
+    parser.add_argument('--lora_rank', '--rank', dest='lora_rank', type=int, help='Rank for LoRA adapters')
     parser.add_argument('--num_classes', type=int, help='Number of classes for classification')
-    parser.add_argument('--pretrained_model', type=str, help='Pre-trained model name')
+    parser.add_argument('--pretrained_model', '--pretrained_model_name', dest='pretrained_model_name', type=str, help='Pre-trained model name')
 
     args = parser.parse_args()
 
@@ -175,37 +175,3 @@ if __name__ == "__main__":
         args = parser.parse_args()
 
     _main(args)
-
-""" command
-CUDA_VISIBLE_DEVICES=7 python main.py --model=fractalnet --num_epochs=400 --batch_size=100 --lr=0.02 --scheduler=MultiStepLR
-CUDA_VISIBLE_DEVICES=7 python main.py --model=densenet --num_epochs=300 --batch_size=64 --lr=0.01 --scheduler=MultiStepLR
-CUDA_VISIBLE_DEVICES=7 python main.py --model=vit --num_epochs=400 --batch_size=128 --optimizer=AdamW --lr=0.0003 --weight_decay=0.02 --scheduler=CosineAnnealingLR
-CUDA_VISIBLE_DEVICES=7 python main.py --model=mlp_mixer --num_epochs=400 --batch_size=128 --optimizer=AdamW --lr=0.001 --weight_decay=0.1 --scheduler=CosineAnnealingLR
-CUDA_VISIBLE_DEVICES=7 python main.py --model=conv_mixer --num_epochs=200 --batch_size=128 --optimizer=AdamW --lr=0.001 --weight_decay=1e-3 --scheduler=CosineAnnealingLR
-CUDA_VISIBLE_DEVICES=7 python main.py --model=rotnet_pretrain --dataset=CIFAR10_rotnet --num_epochs=200 --batch_size=128 --criterion=crossentropyloss --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
-"""
-
-""" test command
-CUDA_VISIBLE_DEVICES=7 python main.py --model=fractalnet --num_epochs=10 --batch_size=100 --lr=0.02 --scheduler=MultiStepLR
-# rotnet (epochs: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=rotnet --dataset=cifar10 --num_epochs=200 --batch_size=128 --optimizer=SGD --lr=0.1 --momentum=0.9 --weight_decay=5e-4 --scheduler=MultiStepLR --nesterov
-# simclr (epochs: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simclr --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.6 --momentum=0.9 --weight_decay=1e-6 --scheduler=CosineAnnealingLR --mode=two_crop
-# moco (epoch: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=moco --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --mode=two_crop
-# byol (epochs: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=byol --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=5e-4 --scheduler=CosineAnnealingLR --mode=two_crop
-# simsiam (epochs: 800)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=simsiam --dataset=cifar10 --num_epochs=800 --batch_size=512 --optimizer=SGD --lr=0.06 --momentum=0.9 --weight_decay=0.0005 --scheduler=CosineAnnealingLR --mode=two_crop
-# dino (epochs: 400)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=vit_tiny --method=dino --dataset=cifar10 --num_epochs=400 --batch_size=256 --optimizer=AdamW --lr=0.0005 --weight_decay=0.04 --scheduler=CosineAnnealingLR --mode=multi_crop
-# swav (epochs: 400)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=resnet18 --method=swav --dataset=cifar10 --num_epochs=400 --batch_size=256 --optimizer=SGD --lr=0.3 --momentum=0.9 --weight_decay=1e-6 --scheduler=CosineAnnealingLR --mode=multi_crop --warmup_epochs=10
-# dino_v2_lora (epochs: 100)
-CUDA_VISIBLE_DEVICES=7 python main.py --model=dino_v2_lora --method=supervised --dataset=flower102 --num_epochs=10 --batch_size=64 --optimizer=AdamW --lr=0.0005 --weight_decay=0.05 --scheduler=CosineAnnealingLR --mode=supervised
-# dinov2_quantized_lora (epochs: 100)
-CUDA_VISIBLE_DEVICES=6 python main.py --model=dinov2_quantized_lora --method=supervised --dataset=cifar100 --num_epochs=10 --batch_size=64 --optimizer=AdamW --lr=0.0005 --weight_decay=0.05 --scheduler=CosineAnnealingLR --mode=supervised --use_quantization
-
-bash scripts/run.sh 7 configs/dinov2_lora.yaml --use_quantization
-bash scripts/run.sh 6 configs/dinov2_lora.yaml
-"""

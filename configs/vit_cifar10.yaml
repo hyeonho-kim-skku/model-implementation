@@ -1,0 +1,13 @@
+model: vit
+method: supervised
+dataset: cifar10
+mode: supervised
+num_epochs: 400
+batch_size: 128
+optimizer: AdamW
+lr: 0.0003
+momentum: 0.9
+weight_decay: 0.02
+scheduler: CosineAnnealingLR
+warmup_epochs: 0
+use_quantization: false

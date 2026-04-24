@@ -1,0 +1,13 @@
+model: resnet18
+method: simclr
+dataset: cifar10
+mode: two_crop
+num_epochs: 800
+batch_size: 512
+optimizer: SGD
+lr: 0.6
+momentum: 0.9
+weight_decay: 0.000001
+scheduler: CosineAnnealingLR
+warmup_epochs: 0
+use_quantization: false
