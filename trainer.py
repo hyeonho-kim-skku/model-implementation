@@ -130,6 +130,10 @@ class Trainer:
             "acc": acc,
             "epoch": epoch,
         }
+        if hasattr(model, "export_config"):
+            state["model_config"] = model.export_config()
+        if hasattr(model, "export_merged_state"):
+            state["merged_model"] = model.export_merged_state()
 
         quant_suffix = "_quantized" if getattr(self.args, "use_quantization", False) else ""
         filename = f"./checkpoint/{self.args.method}_{self.args.model}{quant_suffix}{suffix}_ckpt.pth"
@@ -145,4 +149,3 @@ class Trainer:
                 self.evaluate_supervised(epoch)
 
             self.scheduler.step()
-

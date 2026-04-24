@@ -31,6 +31,9 @@ class LoRALinear(nn.Module):
     def forward(self, x):
         return self.lora_b(self.lora_a(x)) * self.scaling
 
+    def merged_weight(self):
+        return torch.matmul(self.lora_b.weight, self.lora_a.weight) * self.scaling
+
 
 class LoRAWrappedLinear(nn.Module):
     """Wrap a frozen linear layer with a trainable LoRA residual branch."""
@@ -57,6 +60,18 @@ class LoRAWrappedLinear(nn.Module):
 
     def forward(self, x):
         return self.linear(x) + self.lora(x)
+
+    def to_merged_linear(self):
+        merged_linear = nn.Linear(
+            self.linear.in_features,
+            self.linear.out_features,
+            bias=self.linear.bias is not None,
+        )
+        merged_linear.to(device=self.linear.weight.device, dtype=self.linear.weight.dtype)
+        merged_linear.weight.data.copy_(self.linear.weight.data + self.lora.merged_weight().to(self.linear.weight.dtype))
+        if self.linear.bias is not None:
+            merged_linear.bias.data.copy_(self.linear.bias.data)
+        return merged_linear
 
 
 class FusedQKVLoRA(nn.Module):
@@ -111,3 +126,21 @@ class FusedQKVLoRA(nn.Module):
             end = start + self.component_dim
             qkv[..., start:end] = qkv[..., start:end] + adapter(x)
         return qkv
+
+    def to_merged_linear(self):
+        merged_qkv = nn.Linear(
+            self.qkv.in_features,
+            self.qkv.out_features,
+            bias=self.qkv.bias is not None,
+        )
+        merged_qkv.to(device=self.qkv.weight.device, dtype=self.qkv.weight.dtype)
+        merged_qkv.weight.data.copy_(self.qkv.weight.data)
+        if self.qkv.bias is not None:
+            merged_qkv.bias.data.copy_(self.qkv.bias.data)
+
+        for component, adapter in self.adapters.items():
+            start = self._COMPONENT_INDEX[component] * self.component_dim
+            end = start + self.component_dim
+            merged_qkv.weight.data[start:end] += adapter.merged_weight().to(self.qkv.weight.dtype)
+
+        return merged_qkv

@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+import copy
 
 import timm
 import torch
@@ -141,6 +142,12 @@ class TIMMLoRA(nn.Module):
             create_model_kwargs["img_size"] = img_size
 
         self.backbone_name = backbone_name
+        self.img_size = img_size
+        self.lora_rank = rank
+        self.lora_alpha = lora_alpha
+        self.qkv_lora_components = _normalize_qkv_lora_components(qkv_lora_components)
+        self.lora_modules = _normalize_lora_modules(lora_modules)
+        self.pretrained = pretrained
         self.encoder = timm.create_model(backbone_name, **create_model_kwargs)
 
         for parameter in self.encoder.parameters():
@@ -150,8 +157,8 @@ class TIMMLoRA(nn.Module):
             self.encoder,
             rank=rank,
             alpha=lora_alpha,
-            qkv_lora_components=qkv_lora_components,
-            lora_modules=lora_modules,
+            qkv_lora_components=self.qkv_lora_components,
+            lora_modules=self.lora_modules,
         )
 
         feature_dim = getattr(self.encoder, "num_features", None)
@@ -187,3 +194,36 @@ class TIMMLoRA(nn.Module):
     def forward(self, x):
         features = self.forward_features(x)
         return self.classifier(features)
+
+    def export_config(self):
+        return {
+            "model": "timm_lora",
+            "backbone_name": self.backbone_name,
+            "img_size": self.img_size,
+            "num_classes": self.classifier.out_features,
+            "lora_rank": self.lora_rank,
+            "lora_alpha": self.lora_alpha,
+            "lora_modules": list(self.lora_modules),
+            "qkv_lora_components": list(self.qkv_lora_components),
+            "pretrained": self.pretrained,
+        }
+
+    def _build_merged_encoder(self):
+        merged_encoder = copy.deepcopy(self.encoder)
+        for block in merged_encoder.blocks:
+            if isinstance(block.attn.qkv, FusedQKVLoRA):
+                block.attn.qkv = block.attn.qkv.to_merged_linear()
+            if isinstance(block.attn.proj, LoRAWrappedLinear):
+                block.attn.proj = block.attn.proj.to_merged_linear()
+            if isinstance(block.mlp.fc1, LoRAWrappedLinear):
+                block.mlp.fc1 = block.mlp.fc1.to_merged_linear()
+            if isinstance(block.mlp.fc2, LoRAWrappedLinear):
+                block.mlp.fc2 = block.mlp.fc2.to_merged_linear()
+        return merged_encoder
+
+    def export_merged_state(self):
+        merged_encoder = self._build_merged_encoder()
+        return {
+            "encoder": merged_encoder.state_dict(),
+            "classifier": self.classifier.state_dict(),
+        }
