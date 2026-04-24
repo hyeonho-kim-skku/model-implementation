@@ -5,7 +5,7 @@ import torch.nn as nn
 
 
 class LoRALinear(nn.Module):
-    """Standard LoRA module for a single linear projection."""
+    """Low-rank residual branch for a single linear projection."""
 
     def __init__(self, in_features, out_features, rank, alpha=None, bias=False):
         super().__init__()
@@ -30,6 +30,33 @@ class LoRALinear(nn.Module):
 
     def forward(self, x):
         return self.lora_b(self.lora_a(x)) * self.scaling
+
+
+class LoRAWrappedLinear(nn.Module):
+    """Wrap a frozen linear layer with a trainable LoRA residual branch."""
+
+    def __init__(self, linear, rank, alpha=None):
+        super().__init__()
+        if not isinstance(linear, nn.Linear):
+            raise TypeError("LoRAWrappedLinear expects an nn.Linear module.")
+
+        self.linear = linear
+        for parameter in self.linear.parameters():
+            parameter.requires_grad = False
+
+        self.lora = LoRALinear(
+            in_features=linear.in_features,
+            out_features=linear.out_features,
+            rank=rank,
+            alpha=alpha,
+            bias=False,
+        )
+
+        self.in_features = linear.in_features
+        self.out_features = linear.out_features
+
+    def forward(self, x):
+        return self.linear(x) + self.lora(x)
 
 
 class FusedQKVLoRA(nn.Module):

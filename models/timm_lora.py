@@ -4,44 +4,111 @@ import timm
 import torch
 import torch.nn as nn
 
-from .lora import FusedQKVLoRA
+from .lora import FusedQKVLoRA, LoRAWrappedLinear
 
 
-def _normalize_components(target_components):
-    if target_components is None:
-        return ("q", "v")
-    if isinstance(target_components, str):
-        return tuple(component.strip() for component in target_components.split(",") if component.strip())
-    if isinstance(target_components, Iterable):
-        return tuple(target_components)
-    raise TypeError("target_components must be None, a comma-separated string, or an iterable.")
+DEFAULT_LORA_MODULES = ("qkv",)
+VALID_LORA_MODULES = {"qkv", "proj", "mlp"}
+
+
+def _normalize_csv_or_iterable(value, default):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+    if isinstance(value, Iterable):
+        return tuple(value)
+    raise TypeError("Expected None, a comma-separated string, or an iterable.")
+
+
+def _normalize_qkv_lora_components(qkv_lora_components):
+    return _normalize_csv_or_iterable(qkv_lora_components, ("q", "v"))
+
+
+def _normalize_lora_modules(lora_modules):
+    normalized_modules = tuple(item.lower() for item in _normalize_csv_or_iterable(lora_modules, DEFAULT_LORA_MODULES))
+    invalid_modules = set(normalized_modules) - VALID_LORA_MODULES
+    if invalid_modules:
+        raise ValueError(f"Unsupported LoRA modules: {sorted(invalid_modules)}")
+    return normalized_modules
+
+
+def _set_child_module(parent_module, child_name, new_module):
+    setattr(parent_module, child_name, new_module)
+
+
+def count_parameters(module):
+    total_params = 0
+    trainable_params = 0
+    for parameter in module.parameters():
+        num_params = parameter.numel()
+        total_params += num_params
+        if parameter.requires_grad:
+            trainable_params += num_params
+    return trainable_params, total_params
 
 
 def inject_lora_into_vit(
     encoder,
     rank,
     alpha=None,
-    target_components=("q", "v"),
+    qkv_lora_components=("q", "v"),
+    lora_modules=("qkv",),
 ):
     if not hasattr(encoder, "blocks"):
         raise ValueError("This timm model does not expose transformer blocks for LoRA injection.")
 
     injected_module_names = []
-    normalized_components = _normalize_components(target_components)
+    normalized_components = _normalize_qkv_lora_components(qkv_lora_components)
+    normalized_modules = _normalize_lora_modules(lora_modules)
 
     for block_idx, block in enumerate(encoder.blocks):
-        if not hasattr(block, "attn") or not hasattr(block.attn, "qkv"):
-            raise ValueError(
-                f"Block {block_idx} does not expose attn.qkv, so fused-qkv LoRA injection is not supported."
-            )
+        if "qkv" in normalized_modules:
+            if not hasattr(block, "attn") or not hasattr(block.attn, "qkv"):
+                raise ValueError(
+                    f"Block {block_idx} does not expose attn.qkv, so fused-qkv LoRA injection is not supported."
+                )
 
-        block.attn.qkv = FusedQKVLoRA(
-            qkv=block.attn.qkv,
-            rank=rank,
-            alpha=alpha,
-            target_components=normalized_components,
-        )
-        injected_module_names.append(f"blocks.{block_idx}.attn.qkv")
+            block.attn.qkv = FusedQKVLoRA(
+                qkv=block.attn.qkv,
+                rank=rank,
+                alpha=alpha,
+                target_components=normalized_components,
+            )
+            injected_module_names.append(f"blocks.{block_idx}.attn.qkv")
+
+        if "proj" in normalized_modules:
+            if not hasattr(block, "attn") or not hasattr(block.attn, "proj"):
+                raise ValueError(
+                    f"Block {block_idx} does not expose attn.proj, so attention projection LoRA is not supported."
+                )
+
+            _set_child_module(
+                block.attn,
+                "proj",
+                LoRAWrappedLinear(block.attn.proj, rank=rank, alpha=alpha),
+            )
+            injected_module_names.append(f"blocks.{block_idx}.attn.proj")
+
+        if "mlp" in normalized_modules:
+            if not hasattr(block, "mlp") or not hasattr(block.mlp, "fc1") or not hasattr(block.mlp, "fc2"):
+                raise ValueError(
+                    f"Block {block_idx} does not expose mlp.fc1/fc2, so MLP LoRA injection is not supported."
+                )
+
+            _set_child_module(
+                block.mlp,
+                "fc1",
+                LoRAWrappedLinear(block.mlp.fc1, rank=rank, alpha=alpha),
+            )
+            injected_module_names.append(f"blocks.{block_idx}.mlp.fc1")
+
+            _set_child_module(
+                block.mlp,
+                "fc2",
+                LoRAWrappedLinear(block.mlp.fc2, rank=rank, alpha=alpha),
+            )
+            injected_module_names.append(f"blocks.{block_idx}.mlp.fc2")
 
     return injected_module_names
 
@@ -55,7 +122,8 @@ class TIMMLoRA(nn.Module):
         pretrained=True,
         img_size=None,
         lora_alpha=None,
-        lora_components=("q", "v"),
+        qkv_lora_components=("q", "v"),
+        lora_modules=("qkv",),
     ):
         super().__init__()
         if backbone_name is None:
@@ -82,7 +150,8 @@ class TIMMLoRA(nn.Module):
             self.encoder,
             rank=rank,
             alpha=lora_alpha,
-            target_components=lora_components,
+            qkv_lora_components=qkv_lora_components,
+            lora_modules=lora_modules,
         )
 
         feature_dim = getattr(self.encoder, "num_features", None)
@@ -90,6 +159,18 @@ class TIMMLoRA(nn.Module):
             raise ValueError(f"{backbone_name} does not expose encoder.num_features.")
 
         self.classifier = nn.Linear(feature_dim, num_classes)
+        trainable_params, total_params = count_parameters(self)
+        self.trainable_params = trainable_params
+        self.total_params = total_params
+
+        print(f"[TIMMLoRA] backbone: {self.backbone_name}")
+        print(f"[TIMMLoRA] injected modules ({len(self.injected_module_names)}):")
+        for module_name in self.injected_module_names:
+            print(f"  - {module_name}")
+        print(
+            f"[TIMMLoRA] trainable params: {self.trainable_params:,} / "
+            f"{self.total_params:,} ({100.0 * self.trainable_params / self.total_params:.2f}%)"
+        )
 
     def forward_features(self, x):
         features = self.encoder.forward_features(x)

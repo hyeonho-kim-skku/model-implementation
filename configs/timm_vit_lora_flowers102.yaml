@@ -14,4 +14,5 @@ scheduler: CosineAnnealingLR
 warmup_epochs: 0
 num_classes: 102
 lora_rank: 4
-lora_components: q,v
+lora_modules: qkv,proj,mlp
+qkv_lora_components: q,k,v
