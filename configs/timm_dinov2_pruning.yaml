@@ -1,0 +1,6 @@
+checkpoint_path: ./checkpoint/supervised_timm_lora_cls_ckpt.pth
+output_dir: ./pruned/dinov2_flowers102
+pruning_ratio: 0.2
+pruning_modules: proj,mlp
+iterative_steps: 1
+global_pruning: false
