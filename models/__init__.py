@@ -8,6 +8,7 @@ from .vit import *
 from .mlp_mixer import *
 from .conv_mixer import *
 from .rotnet import *
+from .timm_lora import TIMMLoRA
 
 def load_model(**kwargs):
     model = kwargs.get('model')
@@ -44,3 +45,20 @@ def load_model(**kwargs):
         return ResNet50()
     elif model == 'vit_tiny':
         return vit_tiny()
+    elif model == 'timm_lora':
+        backbone_name = kwargs.get('backbone_name')
+        num_classes = kwargs.get('num_classes')
+        rank = kwargs.get('lora_rank', 4)
+        pretrained = kwargs.get('pretrained', True)
+        img_size = kwargs.get('img_size')
+        lora_alpha = kwargs.get('lora_alpha')
+        lora_components = kwargs.get('lora_components')
+        return TIMMLoRA(
+            backbone_name=backbone_name,
+            num_classes=num_classes,
+            rank=rank,
+            pretrained=pretrained,
+            img_size=img_size,
+            lora_alpha=lora_alpha,
+            lora_components=lora_components,
+        )
