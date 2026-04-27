@@ -1,0 +1,4 @@
+artifact_path: ./pruned/dinov2_flowers102/pruned_timm_classifier.pth
+dataset: flowers102
+batch_size: 64
+split: test
