@@ -8,26 +8,33 @@ import torch.nn as nn
 from .lora import FusedQKVLoRA, LoRAWrappedLinear
 
 
-DEFAULT_LORA_MODULES = ("qkv",)
 VALID_LORA_MODULES = {"qkv", "proj", "mlp"}
 
 
-def _normalize_csv_or_iterable(value, default):
+def _normalize_csv_or_iterable(value, setting_name):
+    # Examples:
+    #   "qkv,proj,mlp" -> ("qkv", "proj", "mlp")
+    #   "q,k,v" -> ("q", "k", "v")
+    #   None -> ValueError
     if value is None:
-        return default
+        raise ValueError(f"{setting_name} must be explicitly provided.")
     if isinstance(value, str):
         return tuple(item.strip() for item in value.split(",") if item.strip())
     if isinstance(value, Iterable):
         return tuple(value)
-    raise TypeError("Expected None, a comma-separated string, or an iterable.")
+    raise TypeError("Expected a comma-separated string or an iterable.")
 
 
 def _normalize_qkv_lora_components(qkv_lora_components):
-    return _normalize_csv_or_iterable(qkv_lora_components, ("q", "v"))
+    # Example: "q,k,v" -> ("q", "k", "v")
+    return _normalize_csv_or_iterable(qkv_lora_components, "qkv_lora_components")
 
 
 def _normalize_lora_modules(lora_modules):
-    normalized_modules = tuple(item.lower() for item in _normalize_csv_or_iterable(lora_modules, DEFAULT_LORA_MODULES))
+    # Example: "qkv,proj,mlp" -> ("qkv", "proj", "mlp")
+    normalized_modules = tuple(item.lower() for item in _normalize_csv_or_iterable(lora_modules, "lora_modules"))
+    if not normalized_modules:
+        raise ValueError("lora_modules must contain at least one module.")
     invalid_modules = set(normalized_modules) - VALID_LORA_MODULES
     if invalid_modules:
         raise ValueError(f"Unsupported LoRA modules: {sorted(invalid_modules)}")
@@ -53,15 +60,17 @@ def inject_lora_into_vit(
     encoder,
     rank,
     alpha=None,
-    qkv_lora_components=("q", "v"),
-    lora_modules=("qkv",),
+    qkv_lora_components=None,
+    lora_modules=None,
 ):
     if not hasattr(encoder, "blocks"):
         raise ValueError("This timm model does not expose transformer blocks for LoRA injection.")
 
     injected_module_names = []
-    normalized_components = _normalize_qkv_lora_components(qkv_lora_components)
     normalized_modules = _normalize_lora_modules(lora_modules)
+    normalized_components = ()
+    if "qkv" in normalized_modules:
+        normalized_components = _normalize_qkv_lora_components(qkv_lora_components)
 
     for block_idx, block in enumerate(encoder.blocks):
         if "qkv" in normalized_modules:
@@ -123,8 +132,8 @@ class TIMMLoRA(nn.Module):
         pretrained=True,
         img_size=None,
         lora_alpha=None,
-        qkv_lora_components=("q", "v"),
-        lora_modules=("qkv",),
+        qkv_lora_components=None,
+        lora_modules=None,
     ):
         super().__init__()
         if backbone_name is None:
@@ -145,8 +154,10 @@ class TIMMLoRA(nn.Module):
         self.img_size = img_size
         self.lora_rank = rank
         self.lora_alpha = lora_alpha
-        self.qkv_lora_components = _normalize_qkv_lora_components(qkv_lora_components)
         self.lora_modules = _normalize_lora_modules(lora_modules)
+        self.qkv_lora_components = ()
+        if "qkv" in self.lora_modules:
+            self.qkv_lora_components = _normalize_qkv_lora_components(qkv_lora_components)
         self.pretrained = pretrained
         self.encoder = timm.create_model(backbone_name, **create_model_kwargs)
 
