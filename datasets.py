@@ -21,6 +21,24 @@ CONFIG = {
             'blur_prob' : 0.0 # Flower-102는 blur 적용 (논문에서 blur가 성능 향상에 도움된다고 보고됨)
         }
     },
+    'stanford_cars': {
+        'mean' : (0.485, 0.456, 0.406), # ImageNet pretrained timm 모델과 맞춤
+        'std' : (0.229, 0.224, 0.225),
+        'size' : 224,
+        'class' : datasets.StanfordCars,
+        'ssl_params' : {
+            'blur_prob' : 0.0
+        }
+    },
+    'fgvc_aircraft': {
+        'mean' : (0.485, 0.456, 0.406), # ImageNet pretrained timm 모델과 맞춤
+        'std' : (0.229, 0.224, 0.225),
+        'size' : 224,
+        'class' : datasets.FGVCAircraft,
+        'ssl_params' : {
+            'blur_prob' : 0.0
+        }
+    },
     'cifar100': {
         'mean' : (0.485, 0.456, 0.406), # DINOv2 사전 학습 가중치와 맞추기 위해 ImageNet 통계값 사용
         'std' : (0.229, 0.224, 0.225),
@@ -127,6 +145,14 @@ def get_loader(dataset_name, batch_size, mode, train, shuffle, drop_last, num_wo
     dataset_class = CONFIG[dataset_name]['class']
     if dataset_name == 'flowers102':
         split = 'train' if train else 'test'
+        dataset = dataset_class(root=data_root, split=split, download=True, transform=transform)
+    elif dataset_name == 'stanford_cars':
+        # torchvision StanfordCars uses split="train"/"test" instead of train=True/False.
+        split = 'train' if train else 'test'
+        dataset = dataset_class(root=data_root, split=split, download=True, transform=transform)
+    elif dataset_name == 'fgvc_aircraft':
+        # Use train+val for training, which is the common FGVC-Aircraft protocol.
+        split = 'trainval' if train else 'test'
         dataset = dataset_class(root=data_root, split=split, download=True, transform=transform)
     else:
         dataset = dataset_class(root=data_root, train=train, download=True, transform=transform)
