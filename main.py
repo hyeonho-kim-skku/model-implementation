@@ -45,6 +45,7 @@ def _main(args):
         writer=writer,
         device=device,
         knn_trainloader=knn_trainloader,
+        checkpoint_dir=log_dir,
     )
 
     try:

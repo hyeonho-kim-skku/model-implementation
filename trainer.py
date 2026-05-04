@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import os
 
 from utils import knn_eval, move_to_device
 
@@ -21,6 +22,7 @@ class Trainer:
         writer,
         device,
         knn_trainloader=None,
+        checkpoint_dir=None,
     ):
         self.args = args
         self.method = method
@@ -33,6 +35,8 @@ class Trainer:
         self.knn_trainloader = knn_trainloader
         self.best_acc = 0.0
         self.best_knn_acc = 0.0
+        self.checkpoint_dir = checkpoint_dir or "./checkpoint"
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
 
     def train_one_epoch(self, epoch):
         self.method.model.train()
@@ -129,14 +133,14 @@ class Trainer:
             "model": model.state_dict(),
             "acc": acc,
             "epoch": epoch,
+            "args": vars(self.args),
         }
         if hasattr(model, "export_config"):
             state["model_config"] = model.export_config()
         if hasattr(model, "export_merged_state"):
             state["merged_model"] = model.export_merged_state()
 
-        quant_suffix = "_quantized" if getattr(self.args, "use_quantization", False) else ""
-        filename = f"./checkpoint/{self.args.method}_{self.args.model}{quant_suffix}{suffix}_ckpt.pth"
+        filename = os.path.join(self.checkpoint_dir, f"best{suffix}_ckpt.pth")
         torch.save(state, filename)
 
     def fit(self):
