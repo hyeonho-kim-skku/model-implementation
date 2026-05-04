@@ -79,6 +79,7 @@ if __name__ == "__main__":
     parser.add_argument('--backbone-name', dest='backbone_name', type=str, help='timm backbone name')
     parser.add_argument('--img-size', dest='img_size', type=int, help='Override timm model input size')
     parser.add_argument('--pretrained', action=argparse.BooleanOptionalAction, default=True, help='Load pretrained timm weights')
+    parser.add_argument('--freeze-encoder', dest='freeze_encoder', action=argparse.BooleanOptionalAction, default=False, help='Train only the classifier head for timm_classifier')
 
     args = parser.parse_args()
 

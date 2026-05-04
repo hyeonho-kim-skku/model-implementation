@@ -51,11 +51,13 @@ def load_model(**kwargs):
         num_classes = kwargs.get('num_classes')
         pretrained = kwargs.get('pretrained', False)
         img_size = kwargs.get('img_size')
+        freeze_encoder = kwargs.get('freeze_encoder', False)
         return TIMMClassifier(
             backbone_name=backbone_name,
             num_classes=num_classes,
             pretrained=pretrained,
             img_size=img_size,
+            freeze_encoder=freeze_encoder,
         )
     elif model == 'timm_lora':
         backbone_name = kwargs.get('backbone_name')
