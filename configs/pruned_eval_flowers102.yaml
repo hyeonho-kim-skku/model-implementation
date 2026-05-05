@@ -1,0 +1,5 @@
+artifact_path: ./pruned/vit_base_flowers102_mlp020/pruned_timm_classifier.pth
+dataset: flowers102
+batch_size: 64
+split: test
+num_workers: 4
