@@ -47,34 +47,21 @@ def load_model(**kwargs):
     elif model == 'vit_tiny':
         return vit_tiny()
     elif model == 'timm_classifier':
-        backbone_name = kwargs.get('backbone_name')
-        num_classes = kwargs.get('num_classes')
-        pretrained = kwargs.get('pretrained', False)
-        img_size = kwargs.get('img_size')
-        freeze_encoder = kwargs.get('freeze_encoder', False)
         return TIMMClassifier(
-            backbone_name=backbone_name,
-            num_classes=num_classes,
-            pretrained=pretrained,
-            img_size=img_size,
-            freeze_encoder=freeze_encoder,
+            backbone_name=kwargs.get('backbone_name'),
+            num_classes=kwargs.get('num_classes'),
+            pretrained=kwargs.get('pretrained', False),
+            img_size=kwargs.get('img_size'),
+            freeze_encoder=kwargs.get('freeze_encoder', False),
         )
     elif model == 'timm_lora':
-        backbone_name = kwargs.get('backbone_name')
-        num_classes = kwargs.get('num_classes')
-        rank = kwargs.get('lora_rank', 4)
-        pretrained = kwargs.get('pretrained', True)
-        img_size = kwargs.get('img_size')
-        lora_alpha = kwargs.get('lora_alpha')
-        qkv_lora_components = kwargs.get('qkv_lora_components')
-        lora_modules = kwargs.get('lora_modules')
         return TIMMLoRA(
-            backbone_name=backbone_name,
-            num_classes=num_classes,
-            rank=rank,
-            pretrained=pretrained,
-            img_size=img_size,
-            lora_alpha=lora_alpha,
-            qkv_lora_components=qkv_lora_components,
-            lora_modules=lora_modules,
+            backbone_name=kwargs.get('backbone_name'),
+            num_classes=kwargs.get('num_classes'),
+            rank=kwargs.get('lora_rank', 4),
+            pretrained=kwargs.get('pretrained', True),
+            img_size=kwargs.get('img_size'),
+            lora_alpha=kwargs.get('lora_alpha'),
+            qkv_lora_components=kwargs.get('qkv_lora_components'),
+            lora_modules=kwargs.get('lora_modules'),
         )
