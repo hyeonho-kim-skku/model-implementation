@@ -1,7 +1,14 @@
+"""Structured pruning pipeline for dense timm ViT-style classifiers.
+
+The entry point is prune_checkpoint(). It reconstructs a dense model from a
+LoRA checkpoint, builds a Torch-Pruning dependency graph with example inputs,
+prunes selected ViT submodules, and saves a pruning artifact containing the
+pruned model plus metadata.
+"""
+
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
 from dataclasses import dataclass
 
 import torch
@@ -11,26 +18,32 @@ import torch_pruning as tp
 from pruning.checkpoint import build_dense_model_from_checkpoint
 
 
-DEFAULT_PRUNING_MODULES = ("mlp",)
 VALID_PRUNING_MODULES = {"qkv", "mlp"}
 
 
 @dataclass(frozen=True)
 class PruningTargets:
+    """Module sets used to filter Torch-Pruning's proposed pruning groups."""
+
     mlp_layers: set[nn.Module]
     attention_proj_layers: set[nn.Module]
     num_heads: dict[nn.Module, int]
 
 
-def _normalize_pruning_modules(pruning_modules: str | Iterable[str] | None) -> tuple[str, ...]:
+def _normalize_pruning_modules(pruning_modules: str | None) -> tuple[str, ...]:
+    """Normalize a comma-separated string into supported pruning targets.
+
+    Examples:
+        None -> ()
+        "mlp" -> ("mlp",)
+        "qkv,mlp" -> ("qkv", "mlp")
+    """
+
     if pruning_modules is None:
-        return DEFAULT_PRUNING_MODULES
-    if isinstance(pruning_modules, str):
-        normalized_modules = tuple(
-            item.strip().lower() for item in pruning_modules.split(",") if item.strip()
-        )
-    else:
-        normalized_modules = tuple(item.lower() for item in pruning_modules)
+        return ()
+    normalized_modules = tuple(
+        item.strip().lower() for item in pruning_modules.split(",") if item.strip()
+    )
 
     invalid_modules = set(normalized_modules) - VALID_PRUNING_MODULES
     if invalid_modules:
@@ -38,19 +51,30 @@ def _normalize_pruning_modules(pruning_modules: str | Iterable[str] | None) -> t
     return normalized_modules
 
 
-def _iter_vit_blocks(model):
+def _collect_pruning_targets(model, pruning_modules: tuple[str, ...]) -> PruningTargets:
+    """Collect concrete nn.Module objects that should be allowed to trigger pruning.
+
+    Examples:
+        pruning_modules=("mlp",)
+            -> mlp_layers={block.mlp.fc1 for each transformer block}
+            -> attention_proj_layers=set()
+            -> num_heads={}
+
+        pruning_modules=("qkv", "mlp")
+            -> mlp_layers={block.mlp.fc1 for each transformer block}
+            -> attention_proj_layers={block.attn.proj for each transformer block}
+            -> num_heads={block.attn.qkv: block.attn.num_heads for each transformer block}
+    """
+
     if not hasattr(model.encoder, "blocks"):
         raise ValueError("This model does not expose transformer blocks for structured pruning.")
-    return model.encoder.blocks
 
-
-def _collect_pruning_targets(model, pruning_modules: tuple[str, ...]) -> PruningTargets:
     mlp_layers = set()
     attention_proj_layers = set()
     num_heads = {}
     prune_attention = "qkv" in pruning_modules
 
-    for block in _iter_vit_blocks(model):
+    for block in model.encoder.blocks:
         if prune_attention:
             # Torch-Pruning's MHA path roots width pruning at proj.in_features,
             # then propagates matching q/k/v output pruning through the graph.
@@ -69,6 +93,8 @@ def _collect_pruning_targets(model, pruning_modules: tuple[str, ...]) -> Pruning
 
 
 def _count_ops_and_params(model, example_inputs):
+    """Return MAC and parameter counts for the current model structure."""
+
     macs, params = tp.utils.count_ops_and_params(model, example_inputs)
     return int(macs), int(params)
 
@@ -82,9 +108,38 @@ def _build_pruner(
     global_pruning,
     round_to,
 ):
-    importance = tp.importance.MagnitudeImportance(p=2)
+    """Create a Torch-Pruning magnitude pruner and the target filter metadata.
+
+    The returned pruner is the object that traces the model with example_inputs,
+    builds the dependency graph, estimates channel importance, and proposes
+    pruning groups.
+
+    Example for pruning_modules=("mlp",):
+        targets.mlp_layers = {
+            model.encoder.blocks[0].mlp.fc1,
+            model.encoder.blocks[1].mlp.fc1,
+            ...
+        }
+        targets.attention_proj_layers = set()
+        targets.num_heads = {}
+    """
+
+    importance = tp.importance.MagnitudeImportance(
+        p=2,
+        # Combine importance scores from all parameterized ops in a dependency
+        # group by averaging them. For MLP pruning, this means the fc1 output-row
+        # score and the dependent fc2 input-column score are averaged per hidden
+        # channel.
+        group_reduction="mean",
+        # Normalize each group's channel scores by that group's mean score. This
+        # does not change the ranking within a group, but it makes scores more
+        # comparable across groups when global_pruning=True.
+        normalizer="mean",
+    )
     ignored_layers = [model.classifier]
     root_module_types = [nn.Linear]
+    # targets is not the pruned model. It is a filter that says which modules are
+    # allowed to act as pruning roots when Torch-Pruning proposes dependency groups.
     targets = _collect_pruning_targets(model, pruning_modules)
 
     pruner = tp.pruner.MagnitudePruner(
@@ -105,28 +160,111 @@ def _build_pruner(
 
 
 def _is_target_group(dep, targets: PruningTargets, dependency_graph) -> bool:
+    """Check whether a Torch-Pruning dependency group starts from an allowed target.
+
+    For MLP pruning, the allowed root is:
+        layer == block.mlp.fc1
+        handler == output-channel pruning
+
+    This means the pruning group is allowed to start by removing fc1 hidden
+    channels. Torch-Pruning will then handle dependent changes, such as removing
+    the same hidden indices from fc2 input channels.
+    """
+
     layer = dep.layer
     handler = dep.handler
     if layer in targets.mlp_layers:
+        # MLP pruning should reduce fc1.out_features, not fc1.in_features.
         return dependency_graph.is_out_channel_pruning_fn(handler)
     if layer in targets.attention_proj_layers:
+        # Attention width pruning is rooted at proj.in_features so that the
+        # matching qkv/head dimensions can be propagated by Torch-Pruning.
         return dependency_graph.is_in_channel_pruning_fn(handler)
     return False
 
 
-def _execute_targeted_pruning(pruner, targets: PruningTargets):
+def _execute_targeted_pruning(
+    pruner,
+    targets: PruningTargets,
+    inspect_groups=False,
+    max_inspect_groups=3,
+):
+    """Run interactive pruning and apply only groups that match configured targets.
+
+    pruner.step(interactive=True) yields dependency groups one by one instead
+    of pruning immediately. Each group contains all operations that must happen
+    together to keep tensor shapes consistent.
+
+    Example MLP group:
+        root operation: prune block.mlp.fc1 output channels [idxs]
+        dependent op:   prune block.mlp.fc2 input channels [same idxs]
+    """
+
     pruned_groups = []
-    for group in pruner.step(interactive=True):
+    inspected_groups = 0
+    for group_idx, group in enumerate(pruner.step(interactive=True)):
+        # group[0] is the root pruning operation proposed by Torch-Pruning.
+        # dep describes the root layer and pruning direction, while idxs are the
+        # channel indices selected by the importance criterion.
         dep, idxs = group[0]
-        if not _is_target_group(dep, targets, pruner.DG):
+        is_target = _is_target_group(dep, targets, pruner.DG)
+        if inspect_groups and is_target and inspected_groups < max_inspect_groups:
+            print(f"\n[Pruning][Inspect group {inspected_groups + 1}/{max_inspect_groups}]")
+            print(f"proposal_index: {group_idx}")
+            print(f"root_layer: {dep.layer}")
+            print(f"root_handler: {dep.handler}")
+            print(f"num_pruned_indices: {len(idxs)}")
+            print(f"first_pruned_indices: {list(idxs)[:20]}")
+            print(group)
+            inspected_groups += 1
+
+        if not is_target:
+            # The group may be valid for the model, but it was not explicitly
+            # selected by pruning_modules, so leave it untouched.
             continue
+        # This mutates the model in place. Torch-Pruning applies every operation
+        # in the dependency group, not only group[0].
         group.prune()
         pruned_groups.append((dep.layer, dep.handler, idxs))
     return pruned_groups
 
 
+def _linear_shape(layer):
+    return (layer.in_features, layer.out_features)
+
+
+def _collect_target_shapes(model, pruning_modules):
+    shapes = {}
+    if not pruning_modules:
+        return shapes
+
+    for block_idx, block in enumerate(model.encoder.blocks):
+        if "mlp" in pruning_modules:
+            shapes[f"blocks.{block_idx}.mlp.fc1"] = _linear_shape(block.mlp.fc1)
+            shapes[f"blocks.{block_idx}.mlp.fc2"] = _linear_shape(block.mlp.fc2)
+        if "qkv" in pruning_modules:
+            shapes[f"blocks.{block_idx}.attn.qkv"] = _linear_shape(block.attn.qkv)
+            shapes[f"blocks.{block_idx}.attn.proj"] = _linear_shape(block.attn.proj)
+    return shapes
+
+
+def _print_shape_changes(before_shapes, after_shapes, max_lines=24):
+    changed = [
+        (name, before_shapes[name], after_shapes.get(name))
+        for name in before_shapes
+        if after_shapes.get(name) != before_shapes[name]
+    ]
+    print(f"[Pruning][Inspect] changed target layers: {len(changed)}")
+    for name, before, after in changed[:max_lines]:
+        print(f"  {name}: Linear{before} -> Linear{after}")
+    if len(changed) > max_lines:
+        print(f"  ... {len(changed) - max_lines} more changed layers")
+
+
 def _refresh_attention_metadata(model):
-    for block in _iter_vit_blocks(model):
+    """Update timm attention metadata after qkv/head dimensions have changed."""
+
+    for block in model.encoder.blocks:
         attn = block.attn
         if attn.qkv.out_features % (3 * attn.num_heads) != 0:
             raise ValueError(
@@ -139,6 +277,7 @@ def _refresh_attention_metadata(model):
 
 def _build_pruning_artifact(
     checkpoint,
+    checkpoint_path,
     model,
     pruning_modules,
     pruning_ratio,
@@ -151,9 +290,16 @@ def _build_pruning_artifact(
     pruned_params,
     pruned_groups,
 ):
+    """Package the pruned model and pruning statistics into a serializable artifact."""
+
     return {
         "model": model,
-        "source_checkpoint": checkpoint,
+        "source_checkpoint_path": checkpoint_path,
+        "source_checkpoint_meta": {
+            "acc": checkpoint.get("acc"),
+            "epoch": checkpoint.get("epoch"),
+            "model_config": checkpoint.get("model_config"),
+        },
         "model_config": checkpoint["model_config"],
         "pruning_config": {
             "pruning_modules": list(pruning_modules),
@@ -177,17 +323,25 @@ def prune_checkpoint(
     output_dir,
     output_path=None,
     pruning_ratio=0.2,
-    pruning_modules="mlp",
+    pruning_modules=None,
     iterative_steps=1,
     global_pruning=False,
     round_to=None,
+    inspect_groups=False,
+    max_inspect_groups=3,
     device="cpu",
 ):
+    """Prune a LoRA checkpoint after reconstructing its merged dense classifier."""
+
     checkpoint, model = build_dense_model_from_checkpoint(checkpoint_path, map_location=device)
     model = model.to(device)
     model.eval()
 
     model_config = checkpoint["model_config"]
+    # Torch-Pruning needs a representative input shape to trace the model and
+    # build a dependency graph. The values are random because pruning only needs
+    # the forward graph and tensor shapes here, not real dataset samples.
+    # The same input is also used to report MACs before and after pruning.
     example_inputs = torch.randn(
         1,
         3,
@@ -197,22 +351,36 @@ def prune_checkpoint(
     )
 
     normalized_modules = _normalize_pruning_modules(pruning_modules)
+    before_shapes = _collect_target_shapes(model, normalized_modules) if inspect_groups else None
     base_macs, base_params = _count_ops_and_params(model, example_inputs)
-    pruner, targets = _build_pruner(
-        model=model,
-        example_inputs=example_inputs,
-        pruning_ratio=pruning_ratio,
-        pruning_modules=normalized_modules,
-        iterative_steps=iterative_steps,
-        global_pruning=global_pruning,
-        round_to=round_to,
-    )
-    pruned_groups = _execute_targeted_pruning(pruner, targets)
-    _refresh_attention_metadata(model)
+    if normalized_modules:
+        pruner, targets = _build_pruner(
+            model=model,
+            example_inputs=example_inputs,
+            pruning_ratio=pruning_ratio,
+            pruning_modules=normalized_modules,
+            iterative_steps=iterative_steps,
+            global_pruning=global_pruning,
+            round_to=round_to,
+        )
+        pruned_groups = _execute_targeted_pruning(
+            pruner,
+            targets,
+            inspect_groups=inspect_groups,
+            max_inspect_groups=max_inspect_groups,
+        )
+        _refresh_attention_metadata(model)
+    else:
+        # No module was explicitly selected, so leave the model unchanged.
+        pruned_groups = []
+    if inspect_groups and before_shapes is not None:
+        after_shapes = _collect_target_shapes(model, normalized_modules)
+        _print_shape_changes(before_shapes, after_shapes)
     pruned_macs, pruned_params = _count_ops_and_params(model, example_inputs)
 
     artifact = _build_pruning_artifact(
         checkpoint=checkpoint,
+        checkpoint_path=checkpoint_path,
         model=model.cpu(),
         pruning_modules=normalized_modules,
         pruning_ratio=pruning_ratio,
