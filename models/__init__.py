@@ -10,6 +10,7 @@ from .conv_mixer import *
 from .rotnet import *
 from .timm_classifier import TIMMClassifier
 from .timm_lora import TIMMLoRA
+from .timm_pruned_lora import TIMMPrunedLoRA
 
 def load_model(**kwargs):
     model = kwargs.get('model')
@@ -61,6 +62,14 @@ def load_model(**kwargs):
             rank=kwargs.get('lora_rank', 4),
             pretrained=kwargs.get('pretrained', True),
             img_size=kwargs.get('img_size'),
+            lora_alpha=kwargs.get('lora_alpha'),
+            qkv_lora_components=kwargs.get('qkv_lora_components'),
+            lora_modules=kwargs.get('lora_modules'),
+        )
+    elif model == 'timm_pruned_lora':
+        return TIMMPrunedLoRA(
+            artifact_path=kwargs.get('artifact_path'),
+            rank=kwargs.get('lora_rank', 4),
             lora_alpha=kwargs.get('lora_alpha'),
             qkv_lora_components=kwargs.get('qkv_lora_components'),
             lora_modules=kwargs.get('lora_modules'),

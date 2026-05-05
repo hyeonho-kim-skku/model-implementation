@@ -76,6 +76,7 @@ if __name__ == "__main__":
     parser.add_argument('--lora-alpha', dest='lora_alpha', type=float, help='Scaling factor for LoRA adapters')
     parser.add_argument('--lora-modules', dest='lora_modules', type=str, help='Comma-separated modules for LoRA: qkv,proj,mlp')
     parser.add_argument('--qkv-lora-components', dest='qkv_lora_components', type=str, help='Comma-separated qkv components for LoRA, e.g. q,v')
+    parser.add_argument('--artifact-path', dest='artifact_path', type=str, help='Path to a pruned model artifact')
     parser.add_argument('--num-classes', dest='num_classes', type=int, help='Number of classes for classification')
     parser.add_argument('--backbone-name', dest='backbone_name', type=str, help='timm backbone name')
     parser.add_argument('--img-size', dest='img_size', type=int, help='Override timm model input size')
