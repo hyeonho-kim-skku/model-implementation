@@ -41,10 +41,6 @@ def _normalize_lora_modules(lora_modules):
     return normalized_modules
 
 
-def _set_child_module(parent_module, child_name, new_module):
-    setattr(parent_module, child_name, new_module)
-
-
 def count_parameters(module):
     total_params = 0
     trainable_params = 0
@@ -63,8 +59,10 @@ def inject_lora_into_vit(
     qkv_lora_components=None,
     lora_modules=None,
 ):
+    # timm ViT 계열은 보통 encoder.blocks 아래에 Transformer block들이 있고,
+    # 각 block 안의 attention/MLP Linear layer에 LoRA residual branch를 붙인다.
     if not hasattr(encoder, "blocks"):
-        raise ValueError("This timm model does not expose transformer blocks for LoRA injection.")
+        return []
 
     injected_module_names = []
     normalized_modules = _normalize_lora_modules(lora_modules)
@@ -73,52 +71,33 @@ def inject_lora_into_vit(
         normalized_components = _normalize_qkv_lora_components(qkv_lora_components)
 
     for block_idx, block in enumerate(encoder.blocks):
+        # Fused qkv projection: 하나의 Linear가 q/k/v 출력을 이어 붙여 만든다.
+        # target_components로 q, k, v 중 원하는 slice에만 LoRA를 더한다.
         if "qkv" in normalized_modules:
-            if not hasattr(block, "attn") or not hasattr(block.attn, "qkv"):
-                raise ValueError(
-                    f"Block {block_idx} does not expose attn.qkv, so fused-qkv LoRA injection is not supported."
+            if hasattr(block, "attn") and hasattr(block.attn, "qkv"):
+                block.attn.qkv = FusedQKVLoRA(
+                    qkv=block.attn.qkv,
+                    rank=rank,
+                    alpha=alpha,
+                    target_components=normalized_components,
                 )
+                injected_module_names.append(f"blocks.{block_idx}.attn.qkv")
 
-            block.attn.qkv = FusedQKVLoRA(
-                qkv=block.attn.qkv,
-                rank=rank,
-                alpha=alpha,
-                target_components=normalized_components,
-            )
-            injected_module_names.append(f"blocks.{block_idx}.attn.qkv")
-
+        # Attention output projection에도 일반 Linear wrapper 방식으로 LoRA를 붙일 수 있다.
         if "proj" in normalized_modules:
-            if not hasattr(block, "attn") or not hasattr(block.attn, "proj"):
-                raise ValueError(
-                    f"Block {block_idx} does not expose attn.proj, so attention projection LoRA is not supported."
-                )
+            if hasattr(block, "attn") and hasattr(block.attn, "proj"):
+                block.attn.proj = LoRAWrappedLinear(block.attn.proj, rank=rank, alpha=alpha)
+                injected_module_names.append(f"blocks.{block_idx}.attn.proj")
 
-            _set_child_module(
-                block.attn,
-                "proj",
-                LoRAWrappedLinear(block.attn.proj, rank=rank, alpha=alpha),
-            )
-            injected_module_names.append(f"blocks.{block_idx}.attn.proj")
-
+        # ViT MLP는 timm 구현에서 보통 fc1 -> activation -> fc2 구조다.
+        # 둘 다 있을 때만 한 쌍으로 감싸서 중간 차원 양쪽의 adaptation을 허용한다.
         if "mlp" in normalized_modules:
-            if not hasattr(block, "mlp") or not hasattr(block.mlp, "fc1") or not hasattr(block.mlp, "fc2"):
-                raise ValueError(
-                    f"Block {block_idx} does not expose mlp.fc1/fc2, so MLP LoRA injection is not supported."
-                )
+            if hasattr(block, "mlp") and hasattr(block.mlp, "fc1") and hasattr(block.mlp, "fc2"):
+                block.mlp.fc1 = LoRAWrappedLinear(block.mlp.fc1, rank=rank, alpha=alpha)
+                injected_module_names.append(f"blocks.{block_idx}.mlp.fc1")
 
-            _set_child_module(
-                block.mlp,
-                "fc1",
-                LoRAWrappedLinear(block.mlp.fc1, rank=rank, alpha=alpha),
-            )
-            injected_module_names.append(f"blocks.{block_idx}.mlp.fc1")
-
-            _set_child_module(
-                block.mlp,
-                "fc2",
-                LoRAWrappedLinear(block.mlp.fc2, rank=rank, alpha=alpha),
-            )
-            injected_module_names.append(f"blocks.{block_idx}.mlp.fc2")
+                block.mlp.fc2 = LoRAWrappedLinear(block.mlp.fc2, rank=rank, alpha=alpha)
+                injected_module_names.append(f"blocks.{block_idx}.mlp.fc2")
 
     return injected_module_names
 
