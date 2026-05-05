@@ -1,4 +1,6 @@
 import argparse
+import json
+import os
 
 import torch
 import yaml
@@ -18,7 +20,30 @@ def build_parser():
     parser.add_argument("--split", type=str, default="test", help="Dataset split to evaluate: train or test")
     parser.add_argument("--num-workers", dest="num_workers", type=int, default=4, help="DataLoader worker count")
     parser.add_argument("--max-batches", dest="max_batches", type=int, default=None, help="Optional quick eval batch limit")
+    parser.add_argument("--output-json", dest="output_json", type=str, default=None, help="Optional path to save evaluation metrics as JSON")
     return parser
+
+
+def save_metrics_json(args, artifact, metrics):
+    result = {
+        "artifact_path": args.artifact_path,
+        "dataset": args.dataset,
+        "split": args.split,
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+        "max_batches": args.max_batches,
+        "metrics": metrics,
+        "model_config": artifact.get("model_config", {}),
+        "pruning_config": artifact.get("pruning_config", {}),
+        "pruning_stats": artifact.get("pruning_stats", {}),
+        "source_checkpoint_path": artifact.get("source_checkpoint_path"),
+        "source_checkpoint_meta": artifact.get("source_checkpoint_meta", {}),
+    }
+
+    os.makedirs(os.path.dirname(args.output_json) or ".", exist_ok=True)
+    with open(args.output_json, "w") as file:
+        json.dump(result, file, indent=2)
+    print(f"[PrunedEval] metrics saved to: {args.output_json}")
 
 
 def main(args):
@@ -37,6 +62,8 @@ def main(args):
     print(f"[PrunedEval] acc: {metrics['acc']:.2f}%")
     print(f"[PrunedEval] pruning config: {artifact.get('pruning_config', {})}")
     print(f"[PrunedEval] pruning stats: {artifact.get('pruning_stats', {})}")
+    if args.output_json:
+        save_metrics_json(args, artifact, metrics)
 
 
 if __name__ == "__main__":
