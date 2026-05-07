@@ -45,7 +45,7 @@ class TwoCropTransform:
     """1개의 image를 2개의 view로 변환"""
     def __init__(self, transform):
         self.transform = transform
-    
+
     def __call__(self, x):
         v1 = self.transform(x)
         v2 = self.transform(x)
@@ -57,13 +57,13 @@ class MultiCropTransform:
         self.global_transform = global_transform
         self.local_transform = local_transform
         self.local_crops_number = local_crops_number
-    
+
     def __call__(self, x):
         crops = []
         # Two global crops - 32x32
         crops.append(self.global_transform(x))
         crops.append(self.global_transform(x))
-        
+
         # Multiple local crops - 16x16
         for _ in range(self.local_crops_number):
             crops.append(self.local_transform(x))
