@@ -218,3 +218,5 @@ backups/
 
 # ignore pretrained_models
 pretrained_models/
+
+/pruned
