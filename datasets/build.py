@@ -2,6 +2,8 @@ from torch.utils.data import DataLoader
 import torchvision.datasets as datasets
 from torchvision import transforms
 
+from .cub200 import CUB200Dataset
+
 CONFIG = {
     'cifar10': {
         'mean' : (0.4914, 0.4822, 0.4465),
@@ -37,6 +39,15 @@ CONFIG = {
         'class' : datasets.CIFAR100,
         'ssl_params' : {
             'blur_prob' : 0.0 # 작은 이미지를 억지로 키운 것이라 blur는 주지 않는 것이 좋음
+        }
+    },
+    'cub200': {
+        'mean' : (0.485, 0.456, 0.406), # ImageNet pretrained timm 모델과 맞춤
+        'std' : (0.229, 0.224, 0.225),
+        'size' : 224,
+        'class' : CUB200Dataset,
+        'ssl_params' : {
+            'blur_prob' : 0.0
         }
     }
 }
@@ -141,6 +152,8 @@ def get_loader(dataset_name, batch_size, mode, train, shuffle, drop_last, num_wo
         # Use train+val for training, which is the common FGVC-Aircraft protocol.
         split = 'trainval' if train else 'test'
         dataset = dataset_class(root=data_root, split=split, download=True, transform=transform)
+    elif dataset_name == 'cub200':
+        dataset = dataset_class(root=data_root, train=train, transform=transform)
     else:
         dataset = dataset_class(root=data_root, train=train, download=True, transform=transform)
 
