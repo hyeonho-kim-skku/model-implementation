@@ -1,0 +1,17 @@
+model: timm_classifier
+backbone_name: vit_base_patch16_224
+img_size: 224
+pretrained: true
+freeze_encoder: true
+method: supervised
+dataset: cifar100
+mode: supervised
+num_epochs: 10
+batch_size: 64
+optimizer: AdamW
+lr: 0.001
+momentum: 0.9
+weight_decay: 0.0
+scheduler: CosineAnnealingLR
+warmup_epochs: 0
+num_classes: 100
