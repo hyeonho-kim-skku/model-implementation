@@ -1,8 +1,7 @@
 import torch
-import torch.nn.functional as F
 
 from datasets import get_loader
-from utils import move_to_device
+from engine import evaluate_classifier
 
 
 def load_pruned_artifact(artifact_path, map_location="cpu"):
@@ -24,8 +23,9 @@ def evaluate_pruned_model(
 ):
     artifact = load_pruned_artifact(artifact_path, map_location=device)
     model = artifact["model"].to(device)
-    model.eval()
 
+    # Reuse the project-level classifier evaluator so pruned and non-pruned
+    # checkpoints use the same loss/accuracy calculation.
     loader = get_loader(
         dataset_name=dataset_name,
         batch_size=batch_size,
@@ -35,26 +35,4 @@ def evaluate_pruned_model(
         drop_last=False,
         num_workers=num_workers,
     )
-
-    total_loss = 0.0
-    correct = 0
-    total = 0
-    num_batches = 0
-
-    for batch_idx, batch in enumerate(loader):
-        if max_batches is not None and batch_idx >= max_batches:
-            break
-        images, labels = move_to_device(batch, device)
-        logits = model(images)
-        loss = F.cross_entropy(logits, labels)
-
-        total_loss += loss.item()
-        num_batches += 1
-        preds = logits.argmax(dim=1)
-        total += labels.size(0)
-        correct += (preds == labels).sum().item()
-
-    avg_loss = total_loss / num_batches
-    acc = 100.0 * correct / total
-
-    return artifact, {"loss": avg_loss, "acc": acc}
+    return artifact, evaluate_classifier(model, loader, device, max_batches=max_batches)

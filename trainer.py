@@ -1,7 +1,8 @@
-import torch
-import torch.nn.functional as F
 import os
 
+import torch
+
+from engine import evaluate_classifier
 from utils import knn_eval, move_to_device
 
 try:
@@ -65,36 +66,11 @@ class Trainer:
         self.writer.add_scalar("train_loss", avg_loss, epoch)
 
     def evaluate_supervised(self, epoch):
-        self.method.model.eval()
-
-        test_loss = 0.0
-        correct = 0
-        total = 0
-
-        with torch.no_grad():
-            progress = self.testloader
-            if tqdm is not None:
-                progress = tqdm(self.testloader, desc=f"Epoch {epoch} [test]", leave=False)
-
-            for step, batch in enumerate(progress, start=1):
-                images, labels = move_to_device(batch, self.device)
-
-                outputs = self.method.model(images)
-                loss = F.cross_entropy(outputs, labels)
-
-                test_loss += loss.item()
-                _, predicted = torch.max(outputs, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-
-                if tqdm is not None:
-                    progress.set_postfix(
-                        loss=f"{test_loss / step:.4f}",
-                        acc=f"{100.0 * correct / total:.2f}",
-                    )
-
-        avg_loss = test_loss / len(self.testloader)
-        acc = 100.0 * correct / total
+        # Keep supervised evaluation in one shared helper so training-time eval,
+        # checkpoint eval, and pruned-artifact eval report metrics consistently.
+        metrics = evaluate_classifier(self.method.model, self.testloader, self.device)
+        avg_loss = metrics["loss"]
+        acc = metrics["acc"]
 
         if acc > self.best_acc:
             self.best_acc = acc
