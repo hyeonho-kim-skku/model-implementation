@@ -1,10 +1,4 @@
-"""Structured pruning pipeline for dense timm ViT-style classifiers.
-
-The entry point is prune_checkpoint(). It reconstructs a dense model from a
-LoRA checkpoint, builds a Torch-Pruning dependency graph with example inputs,
-prunes selected ViT submodules, and saves a pruning artifact containing the
-pruned model plus metadata.
-"""
+"""Structured pruning pipeline for dense timm ViT-style classifiers."""
 
 from __future__ import annotations
 
@@ -14,8 +8,6 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch_pruning as tp
-
-from pruning.checkpoint import build_dense_model_from_checkpoint
 
 
 VALID_PRUNING_MODULES = {"qkv", "mlp"}
@@ -276,9 +268,9 @@ def _refresh_attention_metadata(model):
 
 
 def _build_pruning_artifact(
-    checkpoint,
-    checkpoint_path,
     model,
+    model_config,
+    source_info,
     pruning_modules,
     pruning_ratio,
     iterative_steps,
@@ -294,13 +286,8 @@ def _build_pruning_artifact(
 
     return {
         "model": model,
-        "source_checkpoint_path": checkpoint_path,
-        "source_checkpoint_meta": {
-            "acc": checkpoint.get("acc"),
-            "epoch": checkpoint.get("epoch"),
-            "model_config": checkpoint.get("model_config"),
-        },
-        "model_config": checkpoint["model_config"],
+        "source": source_info,
+        "model_config": model_config,
         "pruning_config": {
             "pruning_modules": list(pruning_modules),
             "pruning_ratio": pruning_ratio,
@@ -318,8 +305,10 @@ def _build_pruning_artifact(
     }
 
 
-def prune_checkpoint(
-    checkpoint_path,
+def prune_model(
+    model,
+    model_config,
+    source_info,
     output_dir,
     output_path=None,
     pruning_ratio=0.2,
@@ -331,13 +320,11 @@ def prune_checkpoint(
     max_inspect_groups=3,
     device="cpu",
 ):
-    """Prune a LoRA checkpoint after reconstructing its merged dense classifier."""
+    """Prune an already-built dense timm classifier."""
 
-    checkpoint, model = build_dense_model_from_checkpoint(checkpoint_path, map_location=device)
     model = model.to(device)
     model.eval()
 
-    model_config = checkpoint["model_config"]
     # Torch-Pruning needs a representative input shape to trace the model and
     # build a dependency graph. The values are random because pruning only needs
     # the forward graph and tensor shapes here, not real dataset samples.
@@ -379,9 +366,9 @@ def prune_checkpoint(
     pruned_macs, pruned_params = _count_ops_and_params(model, example_inputs)
 
     artifact = _build_pruning_artifact(
-        checkpoint=checkpoint,
-        checkpoint_path=checkpoint_path,
         model=model.cpu(),
+        model_config=model_config,
+        source_info=source_info,
         pruning_modules=normalized_modules,
         pruning_ratio=pruning_ratio,
         iterative_steps=iterative_steps,
@@ -399,7 +386,7 @@ def prune_checkpoint(
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     torch.save(artifact, output_path)
 
-    print(f"[Pruning] checkpoint: {checkpoint_path}")
+    print(f"[Pruning] source: {source_info}")
     print(f"[Pruning] modules: {list(normalized_modules)}")
     print(f"[Pruning] ratio: {pruning_ratio}")
     print(f"[Pruning] groups pruned: {len(pruned_groups)}")

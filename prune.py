@@ -4,7 +4,8 @@ import os
 import torch
 import yaml
 
-from pruning.structured import prune_checkpoint
+from pruning.source import build_pruning_source
+from pruning.structured import prune_model
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -13,7 +14,12 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 def build_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, help="Path to the yaml config file")
-    parser.add_argument("--checkpoint-path", dest="checkpoint_path", type=str, help="Path to a LoRA checkpoint")
+    parser.add_argument("--source-type", dest="source_type", type=str, choices=["checkpoint", "timm"], help="Model source for pruning")
+    parser.add_argument("--checkpoint-path", dest="checkpoint_path", type=str, help="Path to a checkpoint source")
+    parser.add_argument("--backbone-name", dest="backbone_name", type=str, help="timm backbone name for source_type=timm")
+    parser.add_argument("--num-classes", dest="num_classes", type=int, help="Number of classes for source_type=timm")
+    parser.add_argument("--img-size", dest="img_size", type=int, help="Input image size for source_type=timm")
+    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True, help="Load pretrained timm weights for source_type=timm")
     parser.add_argument("--output-dir", dest="output_dir", type=str, default="./pruned", help="Directory to save pruned artifacts")
     parser.add_argument("--output-path", dest="output_path", type=str, default=None, help="Optional full path for the pruned artifact")
     parser.add_argument("--pruning-ratio", dest="pruning_ratio", type=float, default=0.2, help="Structured pruning ratio")
@@ -28,8 +34,11 @@ def build_parser():
 
 def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
-    prune_checkpoint(
-        checkpoint_path=args.checkpoint_path,
+    source = build_pruning_source(vars(args), device=device)
+    prune_model(
+        model=source.model,
+        model_config=source.model_config,
+        source_info=source.source_info,
         output_dir=args.output_dir,
         output_path=args.output_path,
         pruning_ratio=args.pruning_ratio,
