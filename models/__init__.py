@@ -10,6 +10,7 @@ from .conv_mixer import *
 from .rotnet import *
 from .timm_classifier import TIMMClassifier
 from .timm_lora import TIMMLoRA
+from .timm_pruned_linear_probe import TIMMPrunedLinearProbe
 from .timm_pruned_lora import TIMMPrunedLoRA
 
 def load_model(**kwargs):
@@ -73,4 +74,13 @@ def load_model(**kwargs):
             lora_alpha=kwargs.get('lora_alpha'),
             qkv_lora_components=kwargs.get('qkv_lora_components'),
             lora_modules=kwargs.get('lora_modules'),
+            reset_classifier=kwargs.get('reset_classifier', False),
+            num_classes=kwargs.get('num_classes'),
+        )
+    elif model == 'timm_pruned_linear_probe':
+        return TIMMPrunedLinearProbe(
+            artifact_path=kwargs.get('artifact_path'),
+            reset_classifier=kwargs.get('reset_classifier', True),
+            num_classes=kwargs.get('num_classes'),
+            freeze_encoder=kwargs.get('freeze_encoder', True),
         )
