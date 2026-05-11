@@ -25,7 +25,7 @@ def _main(args):
     method = load_method(args.method, model)
     method.to(device)
     
-    optimizer = load_optimizer(args.optimizer, method, args.lr, args.weight_decay, args.momentum, args.nesterov)
+    optimizer = load_optimizer(args.optimizer, method, args.lr, args.weight_decay, args.momentum, args.nesterov, classifier_lr=args.classifier_lr)
     scheduler = load_scheduler(args.scheduler, optimizer, args.num_epochs, args.warmup_epochs)
 
     timezone_kst = datetime.timezone(datetime.timedelta(hours=9))
@@ -65,6 +65,7 @@ if __name__ == "__main__":
     # parser.add_argument('--criterion', type=str, default='crossentropyloss')
     parser.add_argument('--optimizer', type=str, default='SGD')
     parser.add_argument('--lr', type=float)
+    parser.add_argument('--classifier-lr', dest='classifier_lr', type=float, default=None, help='Optional learning rate for classifier head parameters')
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--weight-decay', dest='weight_decay', type=float, default=0.0001)
     parser.add_argument('--scheduler', type=str)

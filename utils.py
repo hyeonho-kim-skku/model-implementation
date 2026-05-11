@@ -3,8 +3,36 @@ import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingLR, LinearLR, SequentialLR
 
-def load_optimizer(optimizer_name, model, lr, weight_decay, momentum=None, nesterov=False):
-    params = (p for p in model.parameters() if p.requires_grad) # for문 돌면서, requires_grad=True인 것들만 추출.
+def load_optimizer(
+    optimizer_name,
+    model,
+    lr,
+    weight_decay,
+    momentum=None,
+    nesterov=False,
+    classifier_lr=None,
+):
+    if classifier_lr is None:
+        params = (p for p in model.parameters() if p.requires_grad) # for문 돌면서, requires_grad=True인 것들만 추출.
+    else:
+        # LoRA-style fine-tuning often benefits from a separate learning rate for
+        # the task head. Frozen backbone parameters are already excluded by
+        # requires_grad=False, so the non-classifier group contains trainable
+        # adapters such as LoRA parameters.
+        classifier_params = []
+        other_params = []
+        for name, parameter in model.named_parameters():
+            if not parameter.requires_grad:
+                continue
+            if ".classifier." in name:
+                classifier_params.append(parameter)
+            else:
+                other_params.append(parameter)
+
+        params = [
+            {"params": other_params, "lr": lr},
+            {"params": classifier_params, "lr": classifier_lr},
+        ]
     if optimizer_name == 'SGD':
         return torch.optim.SGD(params, lr=lr, momentum=momentum, weight_decay=weight_decay, nesterov=nesterov)
     if optimizer_name == 'AdamW':
