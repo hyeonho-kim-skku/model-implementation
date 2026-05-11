@@ -34,6 +34,7 @@ class Trainer:
         self.writer = writer
         self.device = device
         self.knn_trainloader = knn_trainloader
+        self.disable_progress = getattr(args, "disable_progress", False)
         self.best_acc = 0.0
         self.best_knn_acc = 0.0
         self.checkpoint_dir = checkpoint_dir or "./checkpoint"
@@ -44,7 +45,7 @@ class Trainer:
 
         train_loss = 0.0
         progress = self.trainloader
-        if tqdm is not None:
+        if tqdm is not None and not self.disable_progress:
             progress = tqdm(self.trainloader, desc=f"Epoch {epoch} [train]", leave=False)
 
         for step, batch in enumerate(progress, start=1):
@@ -58,7 +59,7 @@ class Trainer:
 
             train_loss += loss.item()
 
-            if tqdm is not None:
+            if tqdm is not None and not self.disable_progress:
                 progress.set_postfix(loss=f"{train_loss / step:.4f}")
 
         avg_loss = train_loss / len(self.trainloader)

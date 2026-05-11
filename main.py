@@ -83,6 +83,7 @@ if __name__ == "__main__":
     parser.add_argument('--pretrained', action=argparse.BooleanOptionalAction, default=True, help='Load pretrained timm weights')
     parser.add_argument('--freeze-encoder', dest='freeze_encoder', action=argparse.BooleanOptionalAction, default=False, help='Train only the classifier head for timm_classifier')
     parser.add_argument('--reset-classifier', dest='reset_classifier', action=argparse.BooleanOptionalAction, default=False, help='Replace the classifier head when loading a pruned artifact')
+    parser.add_argument('--disable-progress', dest='disable_progress', action='store_true', help='Disable tqdm progress bars for cleaner batch logs')
 
     args = parser.parse_args()
 
