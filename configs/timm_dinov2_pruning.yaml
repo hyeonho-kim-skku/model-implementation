@@ -1,3 +1,4 @@
+source_type: checkpoint
 checkpoint_path: ./checkpoint/supervised_timm_lora_cls_ckpt.pth
 output_dir: ./pruned/dinov2_flowers102
 pruning_ratio: 0.05

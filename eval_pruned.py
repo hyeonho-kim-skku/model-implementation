@@ -34,10 +34,9 @@ def save_metrics_json(args, artifact, metrics):
         "max_batches": args.max_batches,
         "metrics": metrics,
         "model_config": artifact.get("model_config", {}),
+        "source": artifact.get("source", {}),
         "pruning_config": artifact.get("pruning_config", {}),
         "pruning_stats": artifact.get("pruning_stats", {}),
-        "source_checkpoint_path": artifact.get("source_checkpoint_path"),
-        "source_checkpoint_meta": artifact.get("source_checkpoint_meta", {}),
     }
 
     os.makedirs(os.path.dirname(args.output_json) or ".", exist_ok=True)
@@ -60,6 +59,7 @@ def main(args):
     print(f"[PrunedEval] dataset: {args.dataset} ({args.split})")
     print(f"[PrunedEval] loss: {metrics['loss']:.4f}")
     print(f"[PrunedEval] acc: {metrics['acc']:.2f}%")
+    print(f"[PrunedEval] source: {artifact.get('source', {})}")
     print(f"[PrunedEval] pruning config: {artifact.get('pruning_config', {})}")
     print(f"[PrunedEval] pruning stats: {artifact.get('pruning_stats', {})}")
     if args.output_json:
