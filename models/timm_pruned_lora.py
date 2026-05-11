@@ -18,6 +18,8 @@ class TIMMPrunedLoRA(nn.Module):
         lora_alpha=None,
         qkv_lora_components=None,
         lora_modules=None,
+        reset_classifier=False,
+        num_classes=None,
     ):
         super().__init__()
 
@@ -34,16 +36,20 @@ class TIMMPrunedLoRA(nn.Module):
         self.lora_alpha = lora_alpha
         self.lora_modules = lora_modules
         self.qkv_lora_components = qkv_lora_components
+        self.reset_classifier = reset_classifier
         self.source_pruning_config = self.artifact.get("pruning_config")
         self.source_pruning_stats = self.artifact.get("pruning_stats")
         self.model_config = self.artifact.get("model_config")
 
+        if self.reset_classifier:
+            self._reset_classifier(num_classes)
         self._freeze_pruned_encoder()
         self.injected_module_names = self._inject_recovery_lora()
         self._unfreeze_classifier()
 
         trainable_params, total_params = count_parameters(self)
         print(f"[TIMMPrunedLoRA] artifact: {artifact_path}")
+        print(f"[TIMMPrunedLoRA] reset_classifier: {self.reset_classifier}")
         print(f"[TIMMPrunedLoRA] injected modules ({len(self.injected_module_names)}):")
         for module_name in self.injected_module_names:
             print(f"  - model.encoder.{module_name}")
@@ -51,6 +57,15 @@ class TIMMPrunedLoRA(nn.Module):
             f"[TIMMPrunedLoRA] trainable params: {trainable_params:,} / "
             f"{total_params:,} ({100.0 * trainable_params / total_params:.2f}%)"
         )
+
+    def _reset_classifier(self, num_classes):
+        # For direct-pruned pretrained sources, the artifact classifier is a
+        # random head created only to keep a complete TIMMClassifier object. LoRA
+        # recovery should usually start with a fresh task head so it is not
+        # coupled to any previous probing run.
+        if num_classes is None:
+            num_classes = self.model.classifier.out_features
+        self.model.classifier = nn.Linear(self.model.classifier.in_features, num_classes)
 
     def _freeze_pruned_encoder(self):
         # LoRA recovery treats the pruned dense encoder as the fixed base model.
@@ -101,6 +116,8 @@ class TIMMPrunedLoRA(nn.Module):
             "lora_alpha": self.lora_alpha,
             "lora_modules": self.lora_modules,
             "qkv_lora_components": self.qkv_lora_components,
+            "reset_classifier": self.reset_classifier,
+            "num_classes": self.model.classifier.out_features,
         }
 
     def _build_merged_encoder(self):
