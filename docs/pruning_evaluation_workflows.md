@@ -130,7 +130,7 @@ Configs:
 
 ```text
 configs/timm_vit_pruning_cifar100.yaml
-configs/timm_vit_pruning.yaml          # flowers102
+configs/timm_vit_pruning_flowers102.yaml
 configs/timm_vit_pruning_cub200.yaml
 ```
 
@@ -138,7 +138,7 @@ Commands:
 
 ```bash
 CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_pruning_cifar100.yaml --inspect-groups
-CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_pruning.yaml --inspect-groups
+CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_pruning_flowers102.yaml --inspect-groups
 CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_pruning_cub200.yaml --inspect-groups
 ```
 
@@ -151,7 +151,7 @@ Configs:
 
 ```text
 configs/timm_vit_pruned_lora_recovery_cifar100.yaml
-configs/timm_vit_pruned_lora_recovery.yaml     # flowers102
+configs/timm_vit_pruned_lora_recovery_flowers102.yaml
 configs/timm_vit_pruned_lora_recovery_cub200.yaml
 ```
 
@@ -159,6 +159,6 @@ Commands:
 
 ```bash
 CUDA_VISIBLE_DEVICES=7 bash scripts/run.sh configs/timm_vit_pruned_lora_recovery_cifar100.yaml
-CUDA_VISIBLE_DEVICES=7 bash scripts/run.sh configs/timm_vit_pruned_lora_recovery.yaml
+CUDA_VISIBLE_DEVICES=7 bash scripts/run.sh configs/timm_vit_pruned_lora_recovery_flowers102.yaml
 CUDA_VISIBLE_DEVICES=7 bash scripts/run.sh configs/timm_vit_pruned_lora_recovery_cub200.yaml
 ```

@@ -1,5 +1,5 @@
 model: timm_pruned_lora
-artifact_path: ./pruned/vit_base_flowers102_mlp020/pruned_timm_classifier.pth
+artifact_path: ./pruned/vit_base_flowers102_lora50_mlp020/pruned_timm_classifier.pth
 method: supervised
 dataset: flowers102
 mode: supervised

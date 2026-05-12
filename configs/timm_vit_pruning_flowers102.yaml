@@ -1,0 +1,8 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_flowers102_supervised/0512-021035/best_cls_ckpt.pth
+output_dir: ./pruned/vit_base_flowers102_lora50_mlp020
+pruning_ratio: 0.20
+pruning_modules: mlp
+iterative_steps: 1
+global_pruning: false
+round_to:
