@@ -1,6 +1,6 @@
 source_type: checkpoint
-checkpoint_path: ./runs/timm_lora_cub200_supervised/0507-225722/best_cls_ckpt.pth
-output_dir: ./pruned/vit_base_cub200_mlp020
+checkpoint_path: ./runs/timm_lora_cub200_supervised/0512-022506/best_cls_ckpt.pth
+output_dir: ./pruned/vit_base_cub200_lora50_mlp020
 pruning_ratio: 0.20
 pruning_modules: mlp
 iterative_steps: 1

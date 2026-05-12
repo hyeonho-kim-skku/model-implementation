@@ -1,5 +1,5 @@
 model: timm_pruned_lora
-artifact_path: ./pruned/vit_base_cub200_mlp020/pruned_timm_classifier.pth
+artifact_path: ./pruned/vit_base_cub200_lora50_mlp020/pruned_timm_classifier.pth
 method: supervised
 dataset: cub200
 mode: supervised
