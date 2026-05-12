@@ -7,7 +7,8 @@ set -euo pipefail
 
 GPU_ID="${GPU_ID:-7}"
 EPOCHS="${EPOCHS:-50}"
-LOG_DIR="${LOG_DIR:-logs/linear_probe_baselines_$(date +%Y%m%d_%H%M%S)}"
+TIMEZONE="${TIMEZONE:-Asia/Seoul}"
+LOG_DIR="${LOG_DIR:-logs/linear_probe_baselines_$(TZ="$TIMEZONE" date +%Y%m%d_%H%M%S)}"
 
 mkdir -p "$LOG_DIR"
 
@@ -16,7 +17,7 @@ run_experiment() {
   local config_path="$2"
   local log_path="${LOG_DIR}/${name}.log"
 
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting ${name}"
+  echo "[$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')] Starting ${name}"
   echo "Config: ${config_path}"
   echo "Epochs: ${EPOCHS}"
   echo "Log: ${log_path}"
@@ -26,7 +27,7 @@ run_experiment() {
     --disable-progress \
     2>&1 | tee "$log_path"
 
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Finished ${name}"
+  echo "[$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')] Finished ${name}"
 }
 
 run_experiment "linear_probe_cifar100" "configs/timm_vit_linear_probe_cifar100.yaml"
