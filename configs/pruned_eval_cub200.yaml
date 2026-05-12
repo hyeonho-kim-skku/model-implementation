@@ -1,0 +1,10 @@
+artifact_path: ./pruned/vit_base_cub200_lora50_mlp020/pruned_timm_classifier.pth
+dataset: cub200
+batch_size: 64
+split: test
+num_workers: 4
+
+# To save metrics for later summaries, pass --output-json at runtime.
+# Example:
+# CUDA_VISIBLE_DEVICES=7 bash scripts/eval_pruned.sh configs/pruned_eval_cub200.yaml \
+#   --output-json pruned/vit_base_cub200_lora50_mlp020/eval_metrics.json
