@@ -22,11 +22,18 @@ def build_parser():
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True, help="Load pretrained timm weights for source_type=timm")
     parser.add_argument("--output-dir", dest="output_dir", type=str, default="./pruned", help="Directory to save pruned artifacts")
     parser.add_argument("--output-path", dest="output_path", type=str, default=None, help="Optional full path for the pruned artifact")
+    parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor"], default="magnitude", help="Importance criterion for structured pruning")
     parser.add_argument("--pruning-ratio", dest="pruning_ratio", type=float, default=0.2, help="Structured pruning ratio")
     parser.add_argument("--pruning-modules", dest="pruning_modules", type=str, default=None, help="Comma-separated pruning targets: qkv,mlp")
     parser.add_argument("--iterative-steps", dest="iterative_steps", type=int, default=1, help="Number of iterative pruning steps")
     parser.add_argument("--global-pruning", dest="global_pruning", action=argparse.BooleanOptionalAction, default=False, help="Use global pruning across target modules")
     parser.add_argument("--round-to", dest="round_to", type=int, default=None, help="Round pruned dimensions to a multiple")
+    parser.add_argument("--calibration-dataset", dest="calibration_dataset", type=str, default=None, help="Dataset used to compute Taylor gradients")
+    parser.add_argument("--calibration-batch-size", dest="calibration_batch_size", type=int, default=64, help="Batch size for Taylor calibration")
+    parser.add_argument("--calibration-batches", dest="calibration_batches", type=int, default=1, help="Number of Taylor calibration batches")
+    parser.add_argument("--calibration-split", dest="calibration_split", type=str, choices=["train", "test"], default="train", help="Dataset split for Taylor calibration")
+    parser.add_argument("--num-workers", dest="num_workers", type=int, default=4, help="Number of dataloader workers")
+    parser.add_argument("--data-root", dest="data_root", type=str, default="./data", help="Dataset root directory")
     parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print selected Torch-Pruning dependency groups")
     parser.add_argument("--max-inspect-groups", dest="max_inspect_groups", type=int, default=3, help="Maximum number of target groups to print when --inspect-groups is enabled")
     return parser
@@ -41,11 +48,18 @@ def main(args):
         source_info=source.source_info,
         output_dir=args.output_dir,
         output_path=args.output_path,
+        importance=args.importance,
         pruning_ratio=args.pruning_ratio,
         pruning_modules=args.pruning_modules,
         iterative_steps=args.iterative_steps,
         global_pruning=args.global_pruning,
         round_to=args.round_to,
+        calibration_dataset=args.calibration_dataset,
+        calibration_batch_size=args.calibration_batch_size,
+        calibration_batches=args.calibration_batches,
+        calibration_split=args.calibration_split,
+        num_workers=args.num_workers,
+        data_root=args.data_root,
         inspect_groups=args.inspect_groups,
         max_inspect_groups=args.max_inspect_groups,
         device=device,

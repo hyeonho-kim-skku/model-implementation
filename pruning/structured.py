@@ -7,7 +7,11 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch_pruning as tp
+
+from datasets import get_loader
+from utils import move_to_device
 
 
 VALID_PRUNING_MODULES = {"qkv", "mlp"}
@@ -91,16 +95,38 @@ def _count_ops_and_params(model, example_inputs):
     return int(macs), int(params)
 
 
+def _build_importance(importance):
+    """Create the Torch-Pruning importance criterion.
+
+    Magnitude uses only weights. Taylor uses weight * gradient, so gradients
+    must be populated before pruner.step() asks this object to score groups.
+    """
+
+    importance = (importance or "magnitude").strip().lower()
+    common_kwargs = {
+        "group_reduction": "mean",
+        "normalizer": "mean",
+    }
+
+    if importance == "magnitude":
+        return tp.importance.MagnitudeImportance(p=2, **common_kwargs), importance
+    if importance == "taylor":
+        return tp.importance.TaylorImportance(**common_kwargs), importance
+
+    raise ValueError("importance must be 'magnitude' or 'taylor'.")
+
+
 def _build_pruner(
     model,
     example_inputs,
+    importance,
     pruning_ratio,
     pruning_modules,
     iterative_steps,
     global_pruning,
     round_to,
 ):
-    """Create a Torch-Pruning magnitude pruner and the target filter metadata.
+    """Create a Torch-Pruning meta pruner and the target filter metadata.
 
     The returned pruner is the object that traces the model with example_inputs,
     builds the dependency graph, estimates channel importance, and proposes
@@ -116,25 +142,14 @@ def _build_pruner(
         targets.num_heads = {}
     """
 
-    importance = tp.importance.MagnitudeImportance(
-        p=2,
-        # Combine importance scores from all parameterized ops in a dependency
-        # group by averaging them. For MLP pruning, this means the fc1 output-row
-        # score and the dependent fc2 input-column score are averaged per hidden
-        # channel.
-        group_reduction="mean",
-        # Normalize each group's channel scores by that group's mean score. This
-        # does not change the ranking within a group, but it makes scores more
-        # comparable across groups when global_pruning=True.
-        normalizer="mean",
-    )
+    importance, importance_type = _build_importance(importance)
     ignored_layers = [model.classifier]
     root_module_types = [nn.Linear]
     # targets is not the pruned model. It is a filter that says which modules are
     # allowed to act as pruning roots when Torch-Pruning proposes dependency groups.
     targets = _collect_pruning_targets(model, pruning_modules)
 
-    pruner = tp.pruner.MagnitudePruner(
+    pruner = tp.pruner.MetaPruner(
         model,
         example_inputs=example_inputs,
         importance=importance,
@@ -148,7 +163,65 @@ def _build_pruner(
         prune_head_dims=True,
         prune_num_heads=False,
     )
-    return pruner, targets
+    return pruner, targets, importance_type
+
+
+def _compute_taylor_gradients(
+    model,
+    calibration_dataset,
+    calibration_batch_size,
+    calibration_batches,
+    calibration_split,
+    num_workers,
+    data_root,
+    device,
+):
+    """Run a few supervised batches so TaylorImportance can read .grad fields."""
+
+    if calibration_dataset is None:
+        raise ValueError("Taylor pruning needs calibration_dataset.")
+
+    dataloader = get_loader(
+        calibration_dataset,
+        calibration_batch_size,
+        mode="test",
+        train=(calibration_split == "train"),
+        shuffle=(calibration_split == "train"),
+        drop_last=False,
+        num_workers=num_workers,
+        data_root=data_root,
+    )
+
+    model.eval()
+    model.zero_grad(set_to_none=True)
+
+    processed_batches = 0
+    total_examples = 0
+    for batch_idx, batch in enumerate(dataloader):
+        if batch_idx >= calibration_batches:
+            break
+        images, labels = move_to_device(batch, device)
+        logits = model(images)
+        loss = F.cross_entropy(logits, labels)
+        # Do not optimizer.step(). Taylor pruning only needs d(loss)/d(weight).
+        # Torch-Pruning reads these gradients later inside pruner.step().
+        loss.backward()
+
+        processed_batches += 1
+        total_examples += labels.size(0)
+
+    if processed_batches == 0:
+        raise ValueError("Taylor pruning did not process any calibration batches.")
+
+    return {
+        "dataset": calibration_dataset,
+        "batch_size": calibration_batch_size,
+        "requested_batches": calibration_batches,
+        "split": calibration_split,
+        "transform_mode": "test",
+        "processed_batches": processed_batches,
+        "processed_examples": total_examples,
+    }
 
 
 def _is_target_group(dep, targets: PruningTargets, dependency_graph) -> bool:
@@ -271,6 +344,8 @@ def _build_pruning_artifact(
     model,
     model_config,
     source_info,
+    importance,
+    calibration_config,
     pruning_modules,
     pruning_ratio,
     iterative_steps,
@@ -289,11 +364,13 @@ def _build_pruning_artifact(
         "source": source_info,
         "model_config": model_config,
         "pruning_config": {
+            "importance": importance,
             "pruning_modules": list(pruning_modules),
             "pruning_ratio": pruning_ratio,
             "iterative_steps": iterative_steps,
             "global_pruning": global_pruning,
             "round_to": round_to,
+            "calibration": calibration_config,
         },
         "pruning_stats": {
             "base_macs": base_macs,
@@ -311,11 +388,18 @@ def prune_model(
     source_info,
     output_dir,
     output_path=None,
+    importance="magnitude",
     pruning_ratio=0.2,
     pruning_modules=None,
     iterative_steps=1,
     global_pruning=False,
     round_to=None,
+    calibration_dataset=None,
+    calibration_batch_size=64,
+    calibration_batches=1,
+    calibration_split="train",
+    num_workers=4,
+    data_root="./data",
     inspect_groups=False,
     max_inspect_groups=3,
     device="cpu",
@@ -338,18 +422,42 @@ def prune_model(
     )
 
     normalized_modules = _normalize_pruning_modules(pruning_modules)
+
     before_shapes = _collect_target_shapes(model, normalized_modules) if inspect_groups else None
     base_macs, base_params = _count_ops_and_params(model, example_inputs)
+    calibration_config = None
+    importance_type = (importance or "magnitude").strip().lower()
     if normalized_modules:
-        pruner, targets = _build_pruner(
+        # The pruner builds the dependency graph and decides which channel groups
+        # can be removed together. The importance object only decides the ranking.
+        pruner, targets, importance_type = _build_pruner(
             model=model,
             example_inputs=example_inputs,
+            importance=importance,
             pruning_ratio=pruning_ratio,
             pruning_modules=normalized_modules,
             iterative_steps=iterative_steps,
             global_pruning=global_pruning,
             round_to=round_to,
         )
+        if importance_type == "taylor":
+            # Taylor scores are based on weight * gradient, so run calibration
+            # backward passes before pruner.step() asks for channel scores.
+            if iterative_steps != 1:
+                raise ValueError(
+                    "Taylor pruning currently supports iterative_steps=1. "
+                    "For iterative Taylor pruning, recompute gradients before each step."
+                )
+            calibration_config = _compute_taylor_gradients(
+                model=model,
+                calibration_dataset=calibration_dataset,
+                calibration_batch_size=calibration_batch_size,
+                calibration_batches=calibration_batches,
+                calibration_split=calibration_split,
+                num_workers=num_workers,
+                data_root=data_root,
+                device=device,
+            )
         pruned_groups = _execute_targeted_pruning(
             pruner,
             targets,
@@ -360,6 +468,9 @@ def prune_model(
     else:
         # No module was explicitly selected, so leave the model unchanged.
         pruned_groups = []
+    # Taylor pruning leaves calibration gradients on parameters. They are useful
+    # only while pruner.step() is choosing channels, so clear them before saving.
+    model.zero_grad(set_to_none=True)
     if inspect_groups and before_shapes is not None:
         after_shapes = _collect_target_shapes(model, normalized_modules)
         _print_shape_changes(before_shapes, after_shapes)
@@ -369,6 +480,8 @@ def prune_model(
         model=model.cpu(),
         model_config=model_config,
         source_info=source_info,
+        importance=importance_type,
+        calibration_config=calibration_config,
         pruning_modules=normalized_modules,
         pruning_ratio=pruning_ratio,
         iterative_steps=iterative_steps,
@@ -387,6 +500,9 @@ def prune_model(
     torch.save(artifact, output_path)
 
     print(f"[Pruning] source: {source_info}")
+    print(f"[Pruning] importance: {importance_type}")
+    if calibration_config is not None:
+        print(f"[Pruning] calibration: {calibration_config}")
     print(f"[Pruning] modules: {list(normalized_modules)}")
     print(f"[Pruning] ratio: {pruning_ratio}")
     print(f"[Pruning] groups pruned: {len(pruned_groups)}")
