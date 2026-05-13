@@ -1,0 +1,13 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_cub200_supervised/0512-022506/best_cls_ckpt.pth
+output_dir: ./pruned/vit_base_cub200_lora50_mlp020_taylor
+importance: taylor
+pruning_ratio: 0.20
+pruning_modules: mlp
+iterative_steps: 1
+global_pruning: false
+round_to:
+calibration_dataset: cub200
+calibration_batch_size: 64
+calibration_batches: 10
+calibration_split: train

@@ -125,6 +125,8 @@ CUDA_VISIBLE_DEVICES=7 bash scripts/run.sh configs/timm_vit_lora_<dataset>.yaml
 ### 5. Pruning After LoRA Fine-Tuning
 
 Prunes the dense `merged_model` saved by a LoRA fine-tuning checkpoint.
+By default these configs use magnitude importance, which ranks channels from
+weights only.
 
 Configs:
 
@@ -141,6 +143,30 @@ CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_pruning_cifar100.y
 CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_pruning_flowers102.yaml --inspect-groups
 CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_pruning_cub200.yaml --inspect-groups
 ```
+
+Taylor importance can be used when a supervised calibration set is available.
+It runs a few calibration forward/backward passes before pruning, then ranks
+channels from `weight * gradient`.
+
+Taylor config:
+
+```text
+configs/timm_vit_taylor_pruning_cifar100.yaml
+configs/timm_vit_taylor_pruning_flowers102.yaml
+configs/timm_vit_taylor_pruning_cub200.yaml
+```
+
+Commands:
+
+```bash
+CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_taylor_pruning_cifar100.yaml --inspect-groups
+CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_taylor_pruning_flowers102.yaml --inspect-groups
+CUDA_VISIBLE_DEVICES=7 bash scripts/prune.sh configs/timm_vit_taylor_pruning_cub200.yaml --inspect-groups
+```
+
+The calibration size is controlled by `calibration_batch_size` and
+`calibration_batches`; for example, `64` and `10` uses up to 640 training
+examples to populate gradients.
 
 ### 6. LoRA Recovery After Fine-Tuned Pruning
 
