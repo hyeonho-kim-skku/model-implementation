@@ -1,0 +1,18 @@
+model: timm_pruned_lora
+artifact_path: ./pruned/vit_base_flowers102_lora50_mlp020_taylor/pruned_timm_classifier.pth
+method: supervised
+dataset: flowers102
+mode: supervised
+num_epochs: 20
+batch_size: 64
+optimizer: AdamW
+lr: 0.0005
+momentum: 0.9
+weight_decay: 0.05
+scheduler: CosineAnnealingLR
+warmup_epochs: 0
+num_classes: 102
+lora_rank: 4
+lora_alpha:
+lora_modules: qkv,proj,mlp
+qkv_lora_components: q,k,v
