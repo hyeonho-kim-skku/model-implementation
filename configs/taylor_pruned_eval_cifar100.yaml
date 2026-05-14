@@ -1,0 +1,6 @@
+artifact_path: ./pruned/vit_base_cifar100_lora50_mlp030_taylor/pruned_timm_classifier.pth
+dataset: cifar100
+batch_size: 64
+split: test
+num_workers: 4
+max_batches:
