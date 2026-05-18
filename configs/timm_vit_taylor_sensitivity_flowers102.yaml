@@ -1,0 +1,20 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_flowers102_supervised/0512-021035/best_cls_ckpt.pth
+dataset: flowers102
+batch_size: 64
+split: test
+num_workers: 4
+max_batches:
+data_root: ./data
+results_path: ./pruned/vit_base_flowers102_lora50_taylor_sensitivity/results.jsonl
+artifact_dir: ./pruned/vit_base_flowers102_lora50_taylor_sensitivity/artifacts
+save_artifacts: false
+ratios: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+target_layers:
+pruning_modules: mlp
+global_pruning: false
+round_to:
+calibration_dataset: flowers102
+calibration_batch_size: 64
+calibration_batches: 10
+calibration_split: train
