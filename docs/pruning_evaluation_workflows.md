@@ -168,6 +168,56 @@ The calibration size is controlled by `calibration_batch_size` and
 `calibration_batches`; for example, `64` and `10` uses up to 640 training
 examples to populate gradients.
 
+### 5.1 Taylor Layer Sensitivity
+
+Layer sensitivity evaluates each transformer block independently. The script
+computes Taylor calibration gradients once, then deep-copies the dense source
+model for each `(layer, ratio)` trial and restores the same gradient snapshot
+before pruning. This keeps every trial independent while avoiding repeated
+calibration passes.
+
+For the compact experiment summary, read the top docstring and `main()` in:
+
+```text
+sensitivity_taylor.py
+```
+
+Configs:
+
+```text
+configs/timm_vit_taylor_sensitivity_cifar100.yaml
+configs/timm_vit_taylor_sensitivity_flowers102.yaml
+configs/timm_vit_taylor_sensitivity_cub200.yaml
+```
+
+Quick check:
+
+```bash
+CUDA_VISIBLE_DEVICES=7 bash scripts/sensitivity_taylor.sh \
+  configs/timm_vit_taylor_sensitivity_cifar100.yaml \
+  --target-layers 0 \
+  --ratios 0.0,0.1 \
+  --max-batches 2
+```
+
+Full sweep:
+
+```bash
+CUDA_VISIBLE_DEVICES=7 bash scripts/sensitivity_taylor.sh \
+  configs/timm_vit_taylor_sensitivity_cifar100.yaml
+```
+
+All downstream datasets:
+
+```bash
+GPU_ID=7 bash scripts/experiments/run_taylor_sensitivity.sh
+```
+
+By default this records `12 layers x 10 ratios` to `results.jsonl`. All ratios,
+including `0.0`, go through the pruning pipeline; `0.0` is a no-op prune used as
+a pipeline sanity check. Add `--save-artifacts` when the trial models themselves
+should be kept.
+
 ### 6. LoRA Recovery After Fine-Tuned Pruning
 
 Starts from a pruned artifact produced after LoRA fine-tuning and trains LoRA
