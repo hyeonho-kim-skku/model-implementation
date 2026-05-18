@@ -25,6 +25,7 @@ def build_parser():
     parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor"], default="magnitude", help="Importance criterion for structured pruning")
     parser.add_argument("--pruning-ratio", dest="pruning_ratio", type=float, default=0.2, help="Structured pruning ratio")
     parser.add_argument("--pruning-modules", dest="pruning_modules", type=str, default=None, help="Comma-separated pruning targets: qkv,mlp")
+    parser.add_argument("--target-block-indices", dest="target_block_indices", type=str, default=None, help="Optional comma-separated transformer block indices to prune")
     parser.add_argument("--iterative-steps", dest="iterative_steps", type=int, default=1, help="Number of iterative pruning steps")
     parser.add_argument("--global-pruning", dest="global_pruning", action=argparse.BooleanOptionalAction, default=False, help="Use global pruning across target modules")
     parser.add_argument("--round-to", dest="round_to", type=int, default=None, help="Round pruned dimensions to a multiple")
@@ -51,6 +52,7 @@ def main(args):
         importance=args.importance,
         pruning_ratio=args.pruning_ratio,
         pruning_modules=args.pruning_modules,
+        target_block_indices=args.target_block_indices,
         iterative_steps=args.iterative_steps,
         global_pruning=args.global_pruning,
         round_to=args.round_to,

@@ -47,7 +47,32 @@ def _normalize_pruning_modules(pruning_modules: str | None) -> tuple[str, ...]:
     return normalized_modules
 
 
-def _collect_pruning_targets(model, pruning_modules: tuple[str, ...]) -> PruningTargets:
+def _normalize_target_block_indices(target_block_indices, num_blocks: int) -> tuple[int, ...] | None:
+    """Normalize optional transformer block indices for layer-wise pruning."""
+
+    if target_block_indices is None:
+        return None
+    if isinstance(target_block_indices, str):
+        if not target_block_indices.strip():
+            return None
+        indices = tuple(int(item.strip()) for item in target_block_indices.split(",") if item.strip())
+    else:
+        indices = tuple(int(item) for item in target_block_indices)
+
+    invalid_indices = [idx for idx in indices if idx < 0 or idx >= num_blocks]
+    if invalid_indices:
+        raise ValueError(
+            f"target_block_indices contains out-of-range indices {invalid_indices}; "
+            f"valid range is 0..{num_blocks - 1}."
+        )
+    return tuple(dict.fromkeys(indices))
+
+
+def _collect_pruning_targets(
+    model,
+    pruning_modules: tuple[str, ...],
+    target_block_indices=None,
+) -> PruningTargets:
     """Collect concrete nn.Module objects that should be allowed to trigger pruning.
 
     Examples:
@@ -69,8 +94,14 @@ def _collect_pruning_targets(model, pruning_modules: tuple[str, ...]) -> Pruning
     attention_proj_layers = set()
     num_heads = {}
     prune_attention = "qkv" in pruning_modules
+    selected_block_indices = _normalize_target_block_indices(
+        target_block_indices,
+        num_blocks=len(model.encoder.blocks),
+    )
 
-    for block in model.encoder.blocks:
+    for block_idx, block in enumerate(model.encoder.blocks):
+        if selected_block_indices is not None and block_idx not in selected_block_indices:
+            continue
         if prune_attention:
             # Torch-Pruning's MHA path roots width pruning at proj.in_features,
             # then propagates matching q/k/v output pruning through the graph.
@@ -122,6 +153,7 @@ def _build_pruner(
     importance,
     pruning_ratio,
     pruning_modules,
+    target_block_indices,
     iterative_steps,
     global_pruning,
     round_to,
@@ -147,7 +179,7 @@ def _build_pruner(
     root_module_types = [nn.Linear]
     # targets is not the pruned model. It is a filter that says which modules are
     # allowed to act as pruning roots when Torch-Pruning proposes dependency groups.
-    targets = _collect_pruning_targets(model, pruning_modules)
+    targets = _collect_pruning_targets(model, pruning_modules, target_block_indices)
 
     pruner = tp.pruner.MetaPruner(
         model,
@@ -166,7 +198,7 @@ def _build_pruner(
     return pruner, targets, importance_type
 
 
-def _compute_taylor_gradients(
+def compute_taylor_gradients(
     model,
     calibration_dataset,
     calibration_batch_size,
@@ -287,6 +319,10 @@ def _execute_targeted_pruning(
             # The group may be valid for the model, but it was not explicitly
             # selected by pruning_modules, so leave it untouched.
             continue
+        if len(idxs) == 0:
+            # A zero pruning ratio can still exercise the dependency graph and
+            # target filtering path. Empty proposals are valid no-ops.
+            continue
         # This mutates the model in place. Torch-Pruning applies every operation
         # in the dependency group, not only group[0].
         group.prune()
@@ -298,12 +334,18 @@ def _linear_shape(layer):
     return (layer.in_features, layer.out_features)
 
 
-def _collect_target_shapes(model, pruning_modules):
+def _collect_target_shapes(model, pruning_modules, target_block_indices=None):
     shapes = {}
     if not pruning_modules:
         return shapes
 
+    selected_block_indices = _normalize_target_block_indices(
+        target_block_indices,
+        num_blocks=len(model.encoder.blocks),
+    )
     for block_idx, block in enumerate(model.encoder.blocks):
+        if selected_block_indices is not None and block_idx not in selected_block_indices:
+            continue
         if "mlp" in pruning_modules:
             shapes[f"blocks.{block_idx}.mlp.fc1"] = _linear_shape(block.mlp.fc1)
             shapes[f"blocks.{block_idx}.mlp.fc2"] = _linear_shape(block.mlp.fc2)
@@ -347,6 +389,7 @@ def _build_pruning_artifact(
     importance,
     calibration_config,
     pruning_modules,
+    target_block_indices,
     pruning_ratio,
     iterative_steps,
     global_pruning,
@@ -366,6 +409,9 @@ def _build_pruning_artifact(
         "pruning_config": {
             "importance": importance,
             "pruning_modules": list(pruning_modules),
+            "target_block_indices": (
+                None if target_block_indices is None else list(target_block_indices)
+            ),
             "pruning_ratio": pruning_ratio,
             "iterative_steps": iterative_steps,
             "global_pruning": global_pruning,
@@ -391,6 +437,7 @@ def prune_model(
     importance="magnitude",
     pruning_ratio=0.2,
     pruning_modules=None,
+    target_block_indices=None,
     iterative_steps=1,
     global_pruning=False,
     round_to=None,
@@ -402,9 +449,20 @@ def prune_model(
     data_root="./data",
     inspect_groups=False,
     max_inspect_groups=3,
+    use_existing_taylor_gradients=False,
+    existing_calibration_config=None,
+    save_artifact=True,
+    verbose=True,
     device="cpu",
 ):
-    """Prune an already-built dense timm classifier."""
+    """Prune an already-built dense timm classifier.
+
+    target_block_indices limits pruning roots to selected transformer blocks.
+    use_existing_taylor_gradients is for sweep jobs that already populated
+    parameter.grad and want to avoid repeated Taylor calibration passes.
+    save_artifact=False is useful for sensitivity sweeps that only need metrics.
+    verbose=False suppresses per-trial logs during large sweeps.
+    """
 
     model = model.to(device)
     model.eval()
@@ -422,8 +480,16 @@ def prune_model(
     )
 
     normalized_modules = _normalize_pruning_modules(pruning_modules)
+    normalized_target_block_indices = _normalize_target_block_indices(
+        target_block_indices,
+        num_blocks=len(model.encoder.blocks),
+    )
 
-    before_shapes = _collect_target_shapes(model, normalized_modules) if inspect_groups else None
+    before_shapes = (
+        _collect_target_shapes(model, normalized_modules, normalized_target_block_indices)
+        if inspect_groups
+        else None
+    )
     base_macs, base_params = _count_ops_and_params(model, example_inputs)
     calibration_config = None
     importance_type = (importance or "magnitude").strip().lower()
@@ -436,6 +502,7 @@ def prune_model(
             importance=importance,
             pruning_ratio=pruning_ratio,
             pruning_modules=normalized_modules,
+            target_block_indices=normalized_target_block_indices,
             iterative_steps=iterative_steps,
             global_pruning=global_pruning,
             round_to=round_to,
@@ -448,16 +515,27 @@ def prune_model(
                     "Taylor pruning currently supports iterative_steps=1. "
                     "For iterative Taylor pruning, recompute gradients before each step."
                 )
-            calibration_config = _compute_taylor_gradients(
-                model=model,
-                calibration_dataset=calibration_dataset,
-                calibration_batch_size=calibration_batch_size,
-                calibration_batches=calibration_batches,
-                calibration_split=calibration_split,
-                num_workers=num_workers,
-                data_root=data_root,
-                device=device,
-            )
+            if use_existing_taylor_gradients:
+                # The caller is responsible for restoring parameter.grad before
+                # prune_model is called. TaylorImportance reads those gradients
+                # during pruner.step().
+                if existing_calibration_config is None:
+                    raise ValueError(
+                        "existing_calibration_config is required when "
+                        "use_existing_taylor_gradients=True."
+                    )
+                calibration_config = existing_calibration_config
+            else:
+                calibration_config = compute_taylor_gradients(
+                    model=model,
+                    calibration_dataset=calibration_dataset,
+                    calibration_batch_size=calibration_batch_size,
+                    calibration_batches=calibration_batches,
+                    calibration_split=calibration_split,
+                    num_workers=num_workers,
+                    data_root=data_root,
+                    device=device,
+                )
         pruned_groups = _execute_targeted_pruning(
             pruner,
             targets,
@@ -472,7 +550,11 @@ def prune_model(
     # only while pruner.step() is choosing channels, so clear them before saving.
     model.zero_grad(set_to_none=True)
     if inspect_groups and before_shapes is not None:
-        after_shapes = _collect_target_shapes(model, normalized_modules)
+        after_shapes = _collect_target_shapes(
+            model,
+            normalized_modules,
+            normalized_target_block_indices,
+        )
         _print_shape_changes(before_shapes, after_shapes)
     pruned_macs, pruned_params = _count_ops_and_params(model, example_inputs)
 
@@ -483,6 +565,7 @@ def prune_model(
         importance=importance_type,
         calibration_config=calibration_config,
         pruning_modules=normalized_modules,
+        target_block_indices=normalized_target_block_indices,
         pruning_ratio=pruning_ratio,
         iterative_steps=iterative_steps,
         global_pruning=global_pruning,
@@ -496,18 +579,22 @@ def prune_model(
 
     if output_path is None:
         output_path = os.path.join(output_dir, "pruned_timm_classifier.pth")
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    torch.save(artifact, output_path)
+    if save_artifact:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        torch.save(artifact, output_path)
 
-    print(f"[Pruning] source: {source_info}")
-    print(f"[Pruning] importance: {importance_type}")
-    if calibration_config is not None:
-        print(f"[Pruning] calibration: {calibration_config}")
-    print(f"[Pruning] modules: {list(normalized_modules)}")
-    print(f"[Pruning] ratio: {pruning_ratio}")
-    print(f"[Pruning] groups pruned: {len(pruned_groups)}")
-    print(f"[Pruning] MACs: {base_macs:,} -> {pruned_macs:,}")
-    print(f"[Pruning] Params: {base_params:,} -> {pruned_params:,}")
-    print(f"[Pruning] saved to: {output_path}")
+    if verbose:
+        print(f"[Pruning] source: {source_info}")
+        print(f"[Pruning] importance: {importance_type}")
+        if calibration_config is not None:
+            print(f"[Pruning] calibration: {calibration_config}")
+        print(f"[Pruning] modules: {list(normalized_modules)}")
+        print(f"[Pruning] target blocks: {normalized_target_block_indices}")
+        print(f"[Pruning] ratio: {pruning_ratio}")
+        print(f"[Pruning] groups pruned: {len(pruned_groups)}")
+        print(f"[Pruning] MACs: {base_macs:,} -> {pruned_macs:,}")
+        print(f"[Pruning] Params: {base_params:,} -> {pruned_params:,}")
+        if save_artifact:
+            print(f"[Pruning] saved to: {output_path}")
 
     return artifact
