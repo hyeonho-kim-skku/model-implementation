@@ -213,6 +213,12 @@ All downstream datasets:
 GPU_ID=7 bash scripts/experiments/run_taylor_sensitivity.sh
 ```
 
+Plot generated results:
+
+```bash
+python analysis/plot_taylor_sensitivity.py
+```
+
 By default this records `12 layers x 10 ratios` to `results.jsonl`. All ratios,
 including `0.0`, go through the pruning pipeline; `0.0` is a no-op prune used as
 a pipeline sanity check. Add `--save-artifacts` when the trial models themselves
