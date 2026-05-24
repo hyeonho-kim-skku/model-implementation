@@ -32,6 +32,15 @@ CONFIG = {
             'blur_prob' : 0.0
         }
     },
+    'stanford_cars': {
+        'mean' : (0.485, 0.456, 0.406), # ImageNet pretrained timm 모델과 맞춤
+        'std' : (0.229, 0.224, 0.225),
+        'size' : 224,
+        'class' : datasets.StanfordCars,
+        'ssl_params' : {
+            'blur_prob' : 0.0
+        }
+    },
     'cifar100': {
         'mean' : (0.485, 0.456, 0.406), # DINOv2 사전 학습 가중치와 맞추기 위해 ImageNet 통계값 사용
         'std' : (0.229, 0.224, 0.225),
@@ -152,6 +161,9 @@ def get_loader(dataset_name, batch_size, mode, train, shuffle, drop_last, num_wo
         # Use train+val for training, which is the common FGVC-Aircraft protocol.
         split = 'trainval' if train else 'test'
         dataset = dataset_class(root=data_root, split=split, download=True, transform=transform)
+    elif dataset_name == 'stanford_cars':
+        split = 'train' if train else 'test'
+        dataset = dataset_class(root=data_root, split=split, download=False, transform=transform)
     elif dataset_name == 'cub200':
         dataset = dataset_class(root=data_root, train=train, transform=transform)
     else:

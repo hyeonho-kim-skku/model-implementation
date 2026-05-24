@@ -7,10 +7,19 @@ set -euo pipefail
 
 GPU_ID="${GPU_ID:-7}"
 EPOCHS="${EPOCHS:-50}"
+DATASETS="${DATASETS:-cifar100,flowers102,cub200,fgvc_aircraft,stanford_cars}"
 TIMEZONE="${TIMEZONE:-Asia/Seoul}"
 LOG_DIR="${LOG_DIR:-logs/linear_probe_baselines_$(TZ="$TIMEZONE" date +%Y%m%d_%H%M%S)}"
 
 mkdir -p "$LOG_DIR"
+
+declare -A CONFIGS=(
+  [cifar100]="configs/timm_vit_linear_probe_cifar100.yaml"
+  [flowers102]="configs/timm_vit_linear_probe_flowers102.yaml"
+  [cub200]="configs/timm_vit_linear_probe_cub200.yaml"
+  [fgvc_aircraft]="configs/timm_vit_linear_probe_fgvc_aircraft.yaml"
+  [stanford_cars]="configs/timm_vit_linear_probe_stanford_cars.yaml"
+)
 
 run_experiment() {
   local name="$1"
@@ -30,6 +39,9 @@ run_experiment() {
   echo "[$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')] Finished ${name}"
 }
 
-run_experiment "linear_probe_cifar100" "configs/timm_vit_linear_probe_cifar100.yaml"
-run_experiment "linear_probe_flowers102" "configs/timm_vit_linear_probe_flowers102.yaml"
-run_experiment "linear_probe_cub200" "configs/timm_vit_linear_probe_cub200.yaml"
+echo "Datasets: ${DATASETS}"
+
+IFS=',' read -ra selected_datasets <<< "$DATASETS"
+for dataset in "${selected_datasets[@]}"; do
+  run_experiment "linear_probe_${dataset}" "${CONFIGS[$dataset]}"
+done

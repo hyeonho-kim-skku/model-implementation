@@ -29,6 +29,8 @@ DEFAULT_RESULTS = [
     "pruned/vit_base_cifar100_lora50_taylor_sensitivity/results.jsonl",
     "pruned/vit_base_flowers102_lora50_taylor_sensitivity/results.jsonl",
     "pruned/vit_base_cub200_lora50_taylor_sensitivity/results.jsonl",
+    "pruned/vit_base_fgvc_aircraft_lora50_taylor_sensitivity/results.jsonl",
+    "pruned/vit_base_stanford_cars_lora50_taylor_sensitivity/results.jsonl",
 ]
 
 

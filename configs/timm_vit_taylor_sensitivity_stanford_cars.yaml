@@ -1,0 +1,20 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_stanford_cars_supervised/0523-205731/best_cls_ckpt.pth
+dataset: stanford_cars
+batch_size: 64
+split: test
+num_workers: 4
+max_batches:
+data_root: ./data
+results_path: ./pruned/vit_base_stanford_cars_lora50_taylor_sensitivity/results.jsonl
+artifact_dir: ./pruned/vit_base_stanford_cars_lora50_taylor_sensitivity/artifacts
+save_artifacts: false
+ratios: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+target_layers:
+pruning_modules: mlp
+global_pruning: false
+round_to:
+calibration_dataset: stanford_cars
+calibration_batch_size: 64
+calibration_batches: 10
+calibration_split: train
