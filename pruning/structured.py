@@ -181,7 +181,7 @@ def _build_pruner(
     # allowed to act as pruning roots when Torch-Pruning proposes dependency groups.
     targets = _collect_pruning_targets(model, pruning_modules, target_block_indices)
 
-    pruner = tp.pruner.MetaPruner(
+    pruner = tp.pruner.BasePruner(
         model,
         example_inputs=example_inputs,
         importance=importance,
