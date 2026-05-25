@@ -2,7 +2,8 @@
 
 Default experiment for ViT-Base:
   layers 0..11 x ratios 0.0,0.1,...,0.9 = 120 trials.
-  Each trial prunes only one transformer block's MLP hidden width.
+  Each trial prunes only one transformer block for the configured target
+  modules, such as MLP hidden neurons or attention heads.
 
 Pipeline:
   load dense checkpoint -> eval reference baseline -> compute Taylor gradients
@@ -18,6 +19,7 @@ prune cumulatively across layers or ratios.
 import argparse
 import copy
 import json
+import math
 import os
 
 import torch
@@ -75,9 +77,10 @@ def build_parser():
     parser.add_argument("--artifact-dir", dest="artifact_dir", type=str, default="./pruned/taylor_layer_sensitivity/artifacts", help="Directory for optional artifacts")
     parser.add_argument("--save-artifacts", dest="save_artifacts", action=argparse.BooleanOptionalAction, default=False, help="Save each pruned trial artifact")
     parser.add_argument("--ratios", type=str, default=DEFAULT_RATIOS, help="Comma-separated pruning ratios")
+    parser.add_argument("--pruned-head-counts", dest="pruned_head_counts", type=str, default=None, help="Comma-separated head counts to prune when pruning_modules=head")
     parser.add_argument("--target-layers", dest="target_layers", type=str, default=None, help="Comma-separated block indices; default uses all blocks")
 
-    parser.add_argument("--pruning-modules", dest="pruning_modules", type=str, default="mlp", help="Comma-separated pruning targets: qkv,mlp")
+    parser.add_argument("--pruning-modules", dest="pruning_modules", type=str, default="mlp", help="Comma-separated pruning targets: head,mlp")
     parser.add_argument("--global-pruning", dest="global_pruning", action=argparse.BooleanOptionalAction, default=False, help="Use global pruning across target modules")
     parser.add_argument("--round-to", dest="round_to", type=int, default=None, help="Round pruned dimensions to a multiple")
     parser.add_argument("--calibration-dataset", dest="calibration_dataset", type=str, default=None, help="Dataset used to compute Taylor gradients")
@@ -134,11 +137,14 @@ def restore_gradients(model, gradients):
         parameter.grad = None if grad is None else grad.to(parameter.device).clone()
 
 
-def artifact_path(args, layer_idx, ratio):
+def artifact_path(args, layer_idx, trial):
     """Deterministic artifact path for optional --save-artifacts output."""
 
-    ratio_tag = f"ratio{int(round(ratio * 100)):03d}"
-    return os.path.join(args.artifact_dir, f"layer_{layer_idx:02d}", ratio_tag, "pruned_timm_classifier.pth")
+    if trial.get("pruned_head_count") is not None:
+        trial_tag = f"heads{trial['pruned_head_count']:02d}"
+    else:
+        trial_tag = f"ratio{int(round(trial['ratio'] * 100)):03d}"
+    return os.path.join(args.artifact_dir, f"layer_{layer_idx:02d}", trial_tag, "pruned_timm_classifier.pth")
 
 
 def write_jsonl(path, row):
@@ -149,7 +155,7 @@ def write_jsonl(path, row):
         file.write(json.dumps(row) + "\n")
 
 
-def reset_results(path, args, ratios, layers, calibration_config, baseline_metrics):
+def reset_results(path, args, trials, layers, calibration_config, baseline_metrics):
     """Start a fresh results file with one metadata row."""
 
     metadata = {
@@ -162,7 +168,7 @@ def reset_results(path, args, ratios, layers, calibration_config, baseline_metri
             "batch_size": args.batch_size,
             "max_batches": args.max_batches,
             "pruning_modules": args.pruning_modules,
-            "ratios": ratios,
+            "trials": trials,
             "target_layers": layers,
             "calibration": calibration_config,
             "reference_baseline_metrics": baseline_metrics,
@@ -174,9 +180,10 @@ def reset_results(path, args, ratios, layers, calibration_config, baseline_metri
         file.write(json.dumps(metadata) + "\n")
 
 
-def make_result_row(source, args, layer_idx, ratio, metrics, artifact=None, path=None):
+def make_result_row(source, args, layer_idx, trial, metrics, artifact=None, path=None):
     """Create the JSONL row for either a pruned artifact or a fallback row."""
 
+    ratio = trial["ratio"]
     pruning_config = {
         "importance": "taylor",
         "pruning_modules": args.pruning_modules,
@@ -202,6 +209,8 @@ def make_result_row(source, args, layer_idx, ratio, metrics, artifact=None, path
         "type": "trial",
         "layer_idx": layer_idx,
         "ratio": ratio,
+        "pruned_head_count": trial.get("pruned_head_count"),
+        "remaining_head_count": trial.get("remaining_head_count"),
         "metrics": metrics,
         "artifact_path": path,
         "model_config": source.model_config,
@@ -211,9 +220,10 @@ def make_result_row(source, args, layer_idx, ratio, metrics, artifact=None, path
     }
 
 
-def validate_sweep(model, ratios, layers):
+def validate_sweep(model, trials, layers):
     """Fail early for impossible ratios or layer indices."""
 
+    ratios = [trial["ratio"] for trial in trials]
     invalid_ratios = [ratio for ratio in ratios if ratio < 0.0 or ratio >= 1.0]
     if invalid_ratios:
         raise ValueError(f"Ratios must be in [0.0, 1.0): {invalid_ratios}")
@@ -223,14 +233,58 @@ def validate_sweep(model, ratios, layers):
     if invalid_layers:
         raise ValueError(f"target_layers contains out-of-range indices: {invalid_layers}")
 
+    for layer_idx in layers:
+        num_heads = model.encoder.blocks[layer_idx].attn.num_heads
+        invalid_counts = [
+            trial["pruned_head_count"]
+            for trial in trials
+            if trial.get("pruned_head_count") is not None
+            and not (0 <= trial["pruned_head_count"] < num_heads)
+        ]
+        if invalid_counts:
+            raise ValueError(
+                f"Layer {layer_idx} has {num_heads} heads; pruned_head_count must be in "
+                f"[0, {num_heads - 1}], got {invalid_counts}."
+            )
 
-def run_pruned_trial(args, source, base_model, gradients, layer_idx, ratio, eval_loader):
+
+def is_head_only_pruning(pruning_modules):
+    modules = [item.strip().lower() for item in str(pruning_modules).split(",") if item.strip()]
+    return modules == ["head"]
+
+
+def head_count_to_ratio(pruned_head_count, num_heads):
+    """Return a ratio that makes Torch-Pruning's ceil(ratio * heads) choose count."""
+
+    if pruned_head_count == 0:
+        return 0.0
+    return math.nextafter(pruned_head_count / num_heads, 0.0)
+
+
+def make_sweep_trials(args, model):
+    if is_head_only_pruning(args.pruning_modules) and args.pruned_head_counts is not None:
+        counts = parse_int_list(args.pruned_head_counts) or []
+        # ViT variants used here keep the same head count in every block.
+        num_heads = model.encoder.blocks[0].attn.num_heads
+        return [
+            {
+                "ratio": head_count_to_ratio(count, num_heads),
+                "pruned_head_count": count,
+                "remaining_head_count": num_heads - count,
+            }
+            for count in counts
+        ]
+    return [{"ratio": ratio} for ratio in parse_float_list(args.ratios)]
+
+
+def run_pruned_trial(args, source, base_model, gradients, layer_idx, trial, eval_loader):
     """Run one independent (layer, ratio) pruning and evaluation trial."""
 
+    ratio = trial["ratio"]
     trial_model = copy.deepcopy(base_model)
     restore_gradients(trial_model, gradients)
 
-    path = artifact_path(args, layer_idx, ratio)
+    path = artifact_path(args, layer_idx, trial)
     artifact = prune_model(
         model=trial_model,
         model_config=source.model_config,
@@ -257,7 +311,7 @@ def run_pruned_trial(args, source, base_model, gradients, layer_idx, ratio, eval
         source=source,
         args=args,
         layer_idx=layer_idx,
-        ratio=ratio,
+        trial=trial,
         metrics=metrics,
         artifact=artifact,
         path=path if args.save_artifacts else None,
@@ -274,14 +328,14 @@ def main(args):
 
     source = build_pruning_source(vars(args), device=DEVICE)
     base_model = source.model.to(DEVICE)
-    ratios = parse_float_list(args.ratios)
+    trials = make_sweep_trials(args, base_model)
     # Empty target_layers means "all transformer blocks".
     layers = parse_int_list(args.target_layers) or list(range(num_blocks(base_model)))
-    validate_sweep(base_model, ratios, layers)
+    validate_sweep(base_model, trials, layers)
 
     print(f"[Sensitivity] device={DEVICE}, blocks={num_blocks(base_model)}")
     print(f"[Sensitivity] layers={layers}")
-    print(f"[Sensitivity] ratios={ratios}")
+    print(f"[Sensitivity] trials={trials}")
 
     eval_loader = make_eval_loader(args)
     baseline_metrics = evaluate_classifier(base_model, eval_loader, DEVICE, args.max_batches)
@@ -305,17 +359,21 @@ def main(args):
     print(f"[Sensitivity] calibration={args.calibration_config}")
     print(f"[Sensitivity] gradient tensors={len(gradients)}")
 
-    reset_results(args.results_path, args, ratios, layers, args.calibration_config, baseline_metrics)
+    reset_results(args.results_path, args, trials, layers, args.calibration_config, baseline_metrics)
 
-    total = len(layers) * len(ratios)
+    total = len(layers) * len(trials)
     # The inner generator yields (layer, ratio) pairs without building a
     # separate list. enumerate(..., start=1) only changes the trial counter.
-    for trial_idx, (layer_idx, ratio) in enumerate(
-        ((layer_idx, ratio) for layer_idx in layers for ratio in ratios),
+    for trial_idx, (layer_idx, trial) in enumerate(
+        ((layer_idx, trial) for layer_idx in layers for trial in trials),
         start=1,
     ):
-        print(f"[Sensitivity] trial {trial_idx}/{total}: layer={layer_idx}, ratio={ratio:.2f}")
-        row = run_pruned_trial(args, source, base_model, gradients, layer_idx, ratio, eval_loader)
+        if trial.get("pruned_head_count") is None:
+            trial_desc = f"ratio={trial['ratio']:.2f}"
+        else:
+            trial_desc = f"pruned_heads={trial['pruned_head_count']}, ratio={trial['ratio']:.6f}"
+        print(f"[Sensitivity] trial {trial_idx}/{total}: layer={layer_idx}, {trial_desc}")
+        row = run_pruned_trial(args, source, base_model, gradients, layer_idx, trial, eval_loader)
         row.update({"trial_index": trial_idx, "total_trials": total})
         write_jsonl(args.results_path, row)
         print(f"[Sensitivity] acc={row['metrics']['acc']:.2f}%")

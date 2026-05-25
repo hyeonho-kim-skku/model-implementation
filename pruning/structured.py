@@ -14,7 +14,7 @@ from datasets import get_loader
 from utils import move_to_device
 
 
-VALID_PRUNING_MODULES = {"qkv", "mlp"}
+VALID_PRUNING_MODULES = {"head", "mlp"}
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ def _normalize_pruning_modules(pruning_modules: str | None) -> tuple[str, ...]:
     Examples:
         None -> ()
         "mlp" -> ("mlp",)
-        "qkv,mlp" -> ("qkv", "mlp")
+        "head,mlp" -> ("head", "mlp")
     """
 
     if pruning_modules is None:
@@ -81,7 +81,7 @@ def _collect_pruning_targets(
             -> attention_proj_layers=set()
             -> num_heads={}
 
-        pruning_modules=("qkv", "mlp")
+        pruning_modules=("head", "mlp")
             -> mlp_layers={block.mlp.fc1 for each transformer block}
             -> attention_proj_layers={block.attn.proj for each transformer block}
             -> num_heads={block.attn.qkv: block.attn.num_heads for each transformer block}
@@ -93,7 +93,7 @@ def _collect_pruning_targets(
     mlp_layers = set()
     attention_proj_layers = set()
     num_heads = {}
-    prune_attention = "qkv" in pruning_modules
+    prune_attention_heads = "head" in pruning_modules
     selected_block_indices = _normalize_target_block_indices(
         target_block_indices,
         num_blocks=len(model.encoder.blocks),
@@ -102,8 +102,8 @@ def _collect_pruning_targets(
     for block_idx, block in enumerate(model.encoder.blocks):
         if selected_block_indices is not None and block_idx not in selected_block_indices:
             continue
-        if prune_attention:
-            # Torch-Pruning's MHA path roots width pruning at proj.in_features,
+        if prune_attention_heads:
+            # Torch-Pruning's MHA path roots head pruning at proj.in_features,
             # then propagates matching q/k/v output pruning through the graph.
             attention_proj_layers.add(block.attn.proj)
             num_heads[block.attn.qkv] = block.attn.num_heads
@@ -192,8 +192,9 @@ def _build_pruner(
         round_to=round_to,
         root_module_types=root_module_types,
         num_heads=targets.num_heads,
-        prune_head_dims=True,
-        prune_num_heads=False,
+        prune_head_dims=False,
+        prune_num_heads=("head" in pruning_modules),
+        head_pruning_ratio=pruning_ratio if "head" in pruning_modules else 0.0,
     )
     return pruner, targets, importance_type
 
@@ -274,8 +275,8 @@ def _is_target_group(dep, targets: PruningTargets, dependency_graph) -> bool:
         # MLP pruning should reduce fc1.out_features, not fc1.in_features.
         return dependency_graph.is_out_channel_pruning_fn(handler)
     if layer in targets.attention_proj_layers:
-        # Attention width pruning is rooted at proj.in_features so that the
-        # matching qkv/head dimensions can be propagated by Torch-Pruning.
+        # Attention head pruning is rooted at proj.in_features so that the
+        # matching qkv output channels can be propagated by Torch-Pruning.
         return dependency_graph.is_in_channel_pruning_fn(handler)
     return False
 
@@ -334,6 +335,30 @@ def _linear_shape(layer):
     return (layer.in_features, layer.out_features)
 
 
+def _attention_metadata(block):
+    attn = block.attn
+    return {
+        "num_heads": int(attn.num_heads),
+        "head_dim": int(attn.head_dim),
+        "attn_dim": int(getattr(attn, "attn_dim", attn.num_heads * attn.head_dim)),
+        "qkv": _linear_shape(attn.qkv),
+        "proj": _linear_shape(attn.proj),
+    }
+
+
+def _collect_attention_metadata(model, target_block_indices=None):
+    metadata = {}
+    selected_block_indices = _normalize_target_block_indices(
+        target_block_indices,
+        num_blocks=len(model.encoder.blocks),
+    )
+    for block_idx, block in enumerate(model.encoder.blocks):
+        if selected_block_indices is not None and block_idx not in selected_block_indices:
+            continue
+        metadata[f"blocks.{block_idx}.attn"] = _attention_metadata(block)
+    return metadata
+
+
 def _collect_target_shapes(model, pruning_modules, target_block_indices=None):
     shapes = {}
     if not pruning_modules:
@@ -349,13 +374,23 @@ def _collect_target_shapes(model, pruning_modules, target_block_indices=None):
         if "mlp" in pruning_modules:
             shapes[f"blocks.{block_idx}.mlp.fc1"] = _linear_shape(block.mlp.fc1)
             shapes[f"blocks.{block_idx}.mlp.fc2"] = _linear_shape(block.mlp.fc2)
-        if "qkv" in pruning_modules:
+        if "head" in pruning_modules:
             shapes[f"blocks.{block_idx}.attn.qkv"] = _linear_shape(block.attn.qkv)
             shapes[f"blocks.{block_idx}.attn.proj"] = _linear_shape(block.attn.proj)
+            shapes[f"blocks.{block_idx}.attn.num_heads"] = block.attn.num_heads
+            shapes[f"blocks.{block_idx}.attn.head_dim"] = block.attn.head_dim
+            shapes[f"blocks.{block_idx}.attn.attn_dim"] = getattr(
+                block.attn,
+                "attn_dim",
+                block.attn.num_heads * block.attn.head_dim,
+            )
     return shapes
 
 
 def _print_shape_changes(before_shapes, after_shapes, max_lines=24):
+    def _format_shape(value):
+        return f"Linear{value}" if isinstance(value, tuple) else str(value)
+
     changed = [
         (name, before_shapes[name], after_shapes.get(name))
         for name in before_shapes
@@ -363,22 +398,39 @@ def _print_shape_changes(before_shapes, after_shapes, max_lines=24):
     ]
     print(f"[Pruning][Inspect] changed target layers: {len(changed)}")
     for name, before, after in changed[:max_lines]:
-        print(f"  {name}: Linear{before} -> Linear{after}")
+        print(f"  {name}: {_format_shape(before)} -> {_format_shape(after)}")
     if len(changed) > max_lines:
         print(f"  ... {len(changed) - max_lines} more changed layers")
 
 
-def _refresh_attention_metadata(model):
-    """Update timm attention metadata after qkv/head dimensions have changed."""
+def _refresh_attention_metadata(model, attention_metadata_before, pruning_modules):
+    """Update timm attention metadata after attention heads have been pruned."""
 
-    for block in model.encoder.blocks:
+    if "head" not in pruning_modules:
+        return
+    if attention_metadata_before is None:
+        raise ValueError("attention_metadata_before is required for attention head pruning.")
+    for block_idx, block in enumerate(model.encoder.blocks):
         attn = block.attn
-        if attn.qkv.out_features % (3 * attn.num_heads) != 0:
+        block_name = f"blocks.{block_idx}.attn"
+        if block_name not in attention_metadata_before:
+            continue
+        original_metadata = attention_metadata_before[block_name]
+        original_head_dim = original_metadata["head_dim"]
+        if attn.qkv.out_features % (3 * original_head_dim) != 0:
             raise ValueError(
-                "Pruned qkv width is incompatible with the current number of attention heads."
+                "Pruned qkv width is incompatible with the original attention head dimension."
             )
-        attn.head_dim = attn.qkv.out_features // (3 * attn.num_heads)
-        attn.attn_dim = attn.head_dim * attn.num_heads
+        new_num_heads = attn.qkv.out_features // (3 * original_head_dim)
+        if new_num_heads < 1:
+            raise ValueError("Attention head pruning removed all heads from a block.")
+        if attn.proj.in_features != new_num_heads * original_head_dim:
+            raise ValueError(
+                "Pruned attention projection width is incompatible with qkv head metadata."
+            )
+        attn.num_heads = new_num_heads
+        attn.head_dim = original_head_dim
+        attn.attn_dim = new_num_heads * original_head_dim
         attn.scale = attn.head_dim ** -0.5
 
 
@@ -399,6 +451,8 @@ def _build_pruning_artifact(
     pruned_macs,
     pruned_params,
     pruned_groups,
+    attention_metadata_before=None,
+    attention_metadata_after=None,
 ):
     """Package the pruned model and pruning statistics into a serializable artifact."""
 
@@ -424,6 +478,8 @@ def _build_pruning_artifact(
             "base_params": base_params,
             "pruned_params": pruned_params,
             "num_pruned_groups": len(pruned_groups),
+            "attention_metadata_before": attention_metadata_before,
+            "attention_metadata_after": attention_metadata_after,
         },
     }
 
@@ -490,6 +546,11 @@ def prune_model(
         if inspect_groups
         else None
     )
+    attention_metadata_before = (
+        _collect_attention_metadata(model, normalized_target_block_indices)
+        if "head" in normalized_modules
+        else None
+    )
     base_macs, base_params = _count_ops_and_params(model, example_inputs)
     calibration_config = None
     importance_type = (importance or "magnitude").strip().lower()
@@ -542,7 +603,11 @@ def prune_model(
             inspect_groups=inspect_groups,
             max_inspect_groups=max_inspect_groups,
         )
-        _refresh_attention_metadata(model)
+        _refresh_attention_metadata(
+            model,
+            attention_metadata_before=attention_metadata_before,
+            pruning_modules=normalized_modules,
+        )
     else:
         # No module was explicitly selected, so leave the model unchanged.
         pruned_groups = []
@@ -557,6 +622,11 @@ def prune_model(
         )
         _print_shape_changes(before_shapes, after_shapes)
     pruned_macs, pruned_params = _count_ops_and_params(model, example_inputs)
+    attention_metadata_after = (
+        _collect_attention_metadata(model, normalized_target_block_indices)
+        if "head" in normalized_modules
+        else None
+    )
 
     artifact = _build_pruning_artifact(
         model=model.cpu(),
@@ -575,6 +645,8 @@ def prune_model(
         pruned_macs=pruned_macs,
         pruned_params=pruned_params,
         pruned_groups=pruned_groups,
+        attention_metadata_before=attention_metadata_before,
+        attention_metadata_after=attention_metadata_after,
     )
 
     if output_path is None:
