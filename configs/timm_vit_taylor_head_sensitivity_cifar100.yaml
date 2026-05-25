@@ -1,0 +1,20 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_cifar100_supervised/0511-224807/best_cls_ckpt.pth
+dataset: cifar100
+batch_size: 64
+split: test
+num_workers: 4
+max_batches:
+data_root: ./data
+results_path: ./pruned/vit_base_cifar100_lora50_taylor_head_sensitivity/results.jsonl
+artifact_dir: ./pruned/vit_base_cifar100_lora50_taylor_head_sensitivity/artifacts
+save_artifacts: false
+pruned_head_counts: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+target_layers:
+pruning_modules: head
+global_pruning: false
+round_to:
+calibration_dataset: cifar100
+calibration_batch_size: 64
+calibration_batches: 10
+calibration_split: train
