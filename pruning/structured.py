@@ -19,11 +19,21 @@ VALID_PRUNING_MODULES = {"head", "mlp"}
 
 @dataclass(frozen=True)
 class PruningTargets:
-    """Module sets used to filter Torch-Pruning's proposed pruning groups."""
+    """Concrete modules selected as pruning roots."""
 
-    mlp_layers: set[nn.Module]
-    attention_proj_layers: set[nn.Module]
+    mlp_layers: tuple[nn.Module, ...]
+    attention_proj_layers: tuple[nn.Module, ...]
     num_heads: dict[nn.Module, int]
+
+
+@dataclass(frozen=True)
+class PruningScopeConfig:
+    """Torch-Pruning ratio scopes for the selected pruning targets."""
+
+    pruning_ratio: float
+    pruning_ratio_dict: dict[nn.Module | tuple[nn.Module, ...], float] | None
+    head_pruning_ratio: float
+    head_pruning_ratio_dict: dict[nn.Module, float] | None
 
 
 def _normalize_pruning_modules(pruning_modules: str | None) -> tuple[str, ...]:
@@ -90,8 +100,8 @@ def _collect_pruning_targets(
     if not hasattr(model.encoder, "blocks"):
         raise ValueError("This model does not expose transformer blocks for structured pruning.")
 
-    mlp_layers = set()
-    attention_proj_layers = set()
+    mlp_layers = []
+    attention_proj_layers = []
     num_heads = {}
     prune_attention_heads = "head" in pruning_modules
     selected_block_indices = _normalize_target_block_indices(
@@ -105,16 +115,16 @@ def _collect_pruning_targets(
         if prune_attention_heads:
             # Torch-Pruning's MHA path roots head pruning at proj.in_features,
             # then propagates matching q/k/v output pruning through the graph.
-            attention_proj_layers.add(block.attn.proj)
+            attention_proj_layers.append(block.attn.proj)
             num_heads[block.attn.qkv] = block.attn.num_heads
         if "mlp" in pruning_modules:
             # fc1.out_features is the MLP hidden width. fc2.out_features is the
             # residual stream width and must stay fixed for post-training pruning.
-            mlp_layers.add(block.mlp.fc1)
+            mlp_layers.append(block.mlp.fc1)
 
     return PruningTargets(
-        mlp_layers=mlp_layers,
-        attention_proj_layers=attention_proj_layers,
+        mlp_layers=tuple(mlp_layers),
+        attention_proj_layers=tuple(attention_proj_layers),
         num_heads=num_heads,
     )
 
@@ -147,6 +157,53 @@ def _build_importance(importance):
     raise ValueError("importance must be 'magnitude' or 'taylor'.")
 
 
+def _build_pruning_scope_config(
+    targets: PruningTargets,
+    pruning_modules: tuple[str, ...],
+    pruning_ratio: float,
+    global_pruning: bool,
+) -> PruningScopeConfig:
+    """Build explicit pruning scopes for Torch-Pruning.
+
+    MLP hidden units and attention heads are scoped separately. When
+    global_pruning=True, MLP layers compete with other selected MLP layers, and
+    attention heads compete with other selected attention heads. MLP unit scores
+    and attention-head scores are not mixed.
+    """
+
+    pruning_ratio_dict = {}
+    head_pruning_ratio_dict = {}
+    head_pruning_ratio = 0.0
+
+    if "mlp" in pruning_modules:
+        if global_pruning:
+            pruning_ratio_dict[targets.mlp_layers] = pruning_ratio
+        else:
+            for layer in targets.mlp_layers:
+                pruning_ratio_dict[layer] = pruning_ratio
+
+    if "head" in pruning_modules:
+        qkv_layers = tuple(targets.num_heads.keys())
+        if qkv_layers:
+            if global_pruning:
+                pruning_ratio_dict[qkv_layers] = pruning_ratio
+            else:
+                for qkv_layer in qkv_layers:
+                    pruning_ratio_dict[qkv_layer] = pruning_ratio
+        if global_pruning:
+            head_pruning_ratio = pruning_ratio
+        else:
+            for qkv_layer in targets.num_heads:
+                head_pruning_ratio_dict[qkv_layer] = pruning_ratio
+
+    return PruningScopeConfig(
+        pruning_ratio=0.0,
+        pruning_ratio_dict=pruning_ratio_dict or None,
+        head_pruning_ratio=head_pruning_ratio,
+        head_pruning_ratio_dict=head_pruning_ratio_dict or None,
+    )
+
+
 def _build_pruner(
     model,
     example_inputs,
@@ -158,11 +215,11 @@ def _build_pruner(
     global_pruning,
     round_to,
 ):
-    """Create a Torch-Pruning meta pruner and the target filter metadata.
+    """Create a Torch-Pruning pruner for the selected target scopes.
 
     The returned pruner is the object that traces the model with example_inputs,
-    builds the dependency graph, estimates channel importance, and proposes
-    pruning groups.
+    builds the dependency graph, estimates channel importance, and applies
+    dependency-aware pruning.
 
     Example for pruning_modules=("mlp",):
         targets.mlp_layers = {
@@ -177,15 +234,20 @@ def _build_pruner(
     importance, importance_type = _build_importance(importance)
     ignored_layers = [model.classifier]
     root_module_types = [nn.Linear]
-    # targets is not the pruned model. It is a filter that says which modules are
-    # allowed to act as pruning roots when Torch-Pruning proposes dependency groups.
     targets = _collect_pruning_targets(model, pruning_modules, target_block_indices)
+    scope_config = _build_pruning_scope_config(
+        targets=targets,
+        pruning_modules=pruning_modules,
+        pruning_ratio=pruning_ratio,
+        global_pruning=global_pruning,
+    )
 
     pruner = tp.pruner.BasePruner(
         model,
         example_inputs=example_inputs,
         importance=importance,
-        pruning_ratio=pruning_ratio,
+        pruning_ratio=scope_config.pruning_ratio,
+        pruning_ratio_dict=scope_config.pruning_ratio_dict,
         iterative_steps=iterative_steps,
         global_pruning=global_pruning,
         ignored_layers=ignored_layers,
@@ -194,9 +256,10 @@ def _build_pruner(
         num_heads=targets.num_heads,
         prune_head_dims=False,
         prune_num_heads=("head" in pruning_modules),
-        head_pruning_ratio=pruning_ratio if "head" in pruning_modules else 0.0,
+        head_pruning_ratio=scope_config.head_pruning_ratio,
+        head_pruning_ratio_dict=scope_config.head_pruning_ratio_dict,
     )
-    return pruner, targets, importance_type
+    return pruner, importance_type
 
 
 def compute_taylor_gradients(
@@ -255,80 +318,6 @@ def compute_taylor_gradients(
         "processed_batches": processed_batches,
         "processed_examples": total_examples,
     }
-
-
-def _is_target_group(dep, targets: PruningTargets, dependency_graph) -> bool:
-    """Check whether a Torch-Pruning dependency group starts from an allowed target.
-
-    For MLP pruning, the allowed root is:
-        layer == block.mlp.fc1
-        handler == output-channel pruning
-
-    This means the pruning group is allowed to start by removing fc1 hidden
-    channels. Torch-Pruning will then handle dependent changes, such as removing
-    the same hidden indices from fc2 input channels.
-    """
-
-    layer = dep.layer
-    handler = dep.handler
-    if layer in targets.mlp_layers:
-        # MLP pruning should reduce fc1.out_features, not fc1.in_features.
-        return dependency_graph.is_out_channel_pruning_fn(handler)
-    if layer in targets.attention_proj_layers:
-        # Attention head pruning is rooted at proj.in_features so that the
-        # matching qkv output channels can be propagated by Torch-Pruning.
-        return dependency_graph.is_in_channel_pruning_fn(handler)
-    return False
-
-
-def _execute_targeted_pruning(
-    pruner,
-    targets: PruningTargets,
-    inspect_groups=False,
-    max_inspect_groups=3,
-):
-    """Run interactive pruning and apply only groups that match configured targets.
-
-    pruner.step(interactive=True) yields dependency groups one by one instead
-    of pruning immediately. Each group contains all operations that must happen
-    together to keep tensor shapes consistent.
-
-    Example MLP group:
-        root operation: prune block.mlp.fc1 output channels [idxs]
-        dependent op:   prune block.mlp.fc2 input channels [same idxs]
-    """
-
-    pruned_groups = []
-    inspected_groups = 0
-    for group_idx, group in enumerate(pruner.step(interactive=True)):
-        # group[0] is the root pruning operation proposed by Torch-Pruning.
-        # dep describes the root layer and pruning direction, while idxs are the
-        # channel indices selected by the importance criterion.
-        dep, idxs = group[0]
-        is_target = _is_target_group(dep, targets, pruner.DG)
-        if inspect_groups and is_target and inspected_groups < max_inspect_groups:
-            print(f"\n[Pruning][Inspect group {inspected_groups + 1}/{max_inspect_groups}]")
-            print(f"proposal_index: {group_idx}")
-            print(f"root_layer: {dep.layer}")
-            print(f"root_handler: {dep.handler}")
-            print(f"num_pruned_indices: {len(idxs)}")
-            print(f"first_pruned_indices: {list(idxs)[:20]}")
-            print(group)
-            inspected_groups += 1
-
-        if not is_target:
-            # The group may be valid for the model, but it was not explicitly
-            # selected by pruning_modules, so leave it untouched.
-            continue
-        if len(idxs) == 0:
-            # A zero pruning ratio can still exercise the dependency graph and
-            # target filtering path. Empty proposals are valid no-ops.
-            continue
-        # This mutates the model in place. Torch-Pruning applies every operation
-        # in the dependency group, not only group[0].
-        group.prune()
-        pruned_groups.append((dep.layer, dep.handler, idxs))
-    return pruned_groups
 
 
 def _linear_shape(layer):
@@ -403,6 +392,109 @@ def _print_shape_changes(before_shapes, after_shapes, max_lines=24):
         print(f"  ... {len(changed) - max_lines} more changed layers")
 
 
+def _ratio(numerator, denominator):
+    return None if denominator == 0 else numerator / denominator
+
+
+def _build_target_pruning_summary(before_shapes, after_shapes):
+    """Summarize target layer sparsity from before/after structural metadata."""
+
+    summary = {
+        "overall": {},
+        "by_layer": {},
+    }
+    mlp_before = 0
+    mlp_after = 0
+    heads_before = 0
+    heads_after = 0
+
+    for name, before in before_shapes.items():
+        after = after_shapes.get(name)
+        if after is None:
+            continue
+        if name.endswith(".mlp.fc1"):
+            layer_name = name.rsplit(".fc1", 1)[0]
+            hidden_before = before[1]
+            hidden_after = after[1]
+            pruned_hidden = hidden_before - hidden_after
+            summary["by_layer"][layer_name] = {
+                "type": "mlp",
+                "hidden_before": hidden_before,
+                "hidden_after": hidden_after,
+                "pruned_hidden": pruned_hidden,
+                "pruned_ratio": _ratio(pruned_hidden, hidden_before),
+            }
+            mlp_before += hidden_before
+            mlp_after += hidden_after
+        elif name.endswith(".attn.num_heads"):
+            layer_name = name.rsplit(".num_heads", 1)[0]
+            pruned_heads = before - after
+            summary["by_layer"][layer_name] = {
+                "type": "head",
+                "heads_before": before,
+                "heads_after": after,
+                "pruned_heads": pruned_heads,
+                "pruned_ratio": _ratio(pruned_heads, before),
+            }
+            heads_before += before
+            heads_after += after
+
+    if mlp_before:
+        pruned_hidden = mlp_before - mlp_after
+        summary["overall"]["mlp"] = {
+            "hidden_before": mlp_before,
+            "hidden_after": mlp_after,
+            "pruned_hidden": pruned_hidden,
+            "pruned_ratio": _ratio(pruned_hidden, mlp_before),
+        }
+    if heads_before:
+        pruned_heads = heads_before - heads_after
+        summary["overall"]["head"] = {
+            "heads_before": heads_before,
+            "heads_after": heads_after,
+            "pruned_heads": pruned_heads,
+            "pruned_ratio": _ratio(pruned_heads, heads_before),
+        }
+    return summary
+
+
+def _print_pruning_summary(summary, max_lines=24):
+    for target_type, values in summary.get("overall", {}).items():
+        if target_type == "mlp":
+            print(
+                "[Pruning][Summary] mlp hidden: "
+                f"{values['hidden_before']} -> {values['hidden_after']} "
+                f"({values['pruned_hidden']} pruned, ratio={values['pruned_ratio']:.4f})"
+            )
+        elif target_type == "head":
+            print(
+                "[Pruning][Summary] attention heads: "
+                f"{values['heads_before']} -> {values['heads_after']} "
+                f"({values['pruned_heads']} pruned, ratio={values['pruned_ratio']:.4f})"
+            )
+
+    changed_layers = [
+        (name, values)
+        for name, values in summary.get("by_layer", {}).items()
+        if values.get("pruned_hidden", values.get("pruned_heads", 0)) != 0
+    ]
+    if max_lines <= 0:
+        return
+    for name, values in changed_layers[:max_lines]:
+        if values["type"] == "mlp":
+            print(
+                f"  {name}: hidden {values['hidden_before']} -> "
+                f"{values['hidden_after']} ({values['pruned_hidden']} pruned)"
+            )
+        elif values["type"] == "head":
+            print(
+                f"  {name}: heads {values['heads_before']} -> "
+                f"{values['heads_after']} ({values['pruned_heads']} pruned)"
+            )
+    if len(changed_layers) > max_lines:
+        print(f"  ... {len(changed_layers) - max_lines} more changed target layers")
+
+
 def _refresh_attention_metadata(model, attention_metadata_before, pruning_modules):
     """Update timm attention metadata after attention heads have been pruned."""
 
@@ -450,7 +542,8 @@ def _build_pruning_artifact(
     base_params,
     pruned_macs,
     pruned_params,
-    pruned_groups,
+    num_pruned_groups,
+    target_pruning_summary,
     attention_metadata_before=None,
     attention_metadata_after=None,
 ):
@@ -477,7 +570,8 @@ def _build_pruning_artifact(
             "pruned_macs": pruned_macs,
             "base_params": base_params,
             "pruned_params": pruned_params,
-            "num_pruned_groups": len(pruned_groups),
+            "num_pruned_groups": num_pruned_groups,
+            "target_pruning_summary": target_pruning_summary,
             "attention_metadata_before": attention_metadata_before,
             "attention_metadata_after": attention_metadata_after,
         },
@@ -504,7 +598,6 @@ def prune_model(
     num_workers=4,
     data_root="./data",
     inspect_groups=False,
-    max_inspect_groups=3,
     use_existing_taylor_gradients=False,
     existing_calibration_config=None,
     save_artifact=True,
@@ -541,10 +634,10 @@ def prune_model(
         num_blocks=len(model.encoder.blocks),
     )
 
-    before_shapes = (
-        _collect_target_shapes(model, normalized_modules, normalized_target_block_indices)
-        if inspect_groups
-        else None
+    before_shapes = _collect_target_shapes(
+        model,
+        normalized_modules,
+        normalized_target_block_indices,
     )
     attention_metadata_before = (
         _collect_attention_metadata(model, normalized_target_block_indices)
@@ -557,7 +650,7 @@ def prune_model(
     if normalized_modules:
         # The pruner builds the dependency graph and decides which channel groups
         # can be removed together. The importance object only decides the ranking.
-        pruner, targets, importance_type = _build_pruner(
+        pruner, importance_type = _build_pruner(
             model=model,
             example_inputs=example_inputs,
             importance=importance,
@@ -597,12 +690,9 @@ def prune_model(
                     data_root=data_root,
                     device=device,
                 )
-        pruned_groups = _execute_targeted_pruning(
-            pruner,
-            targets,
-            inspect_groups=inspect_groups,
-            max_inspect_groups=max_inspect_groups,
-        )
+        history_before = len(pruner.pruning_history())
+        pruner.step()
+        num_pruned_groups = len(pruner.pruning_history()) - history_before
         _refresh_attention_metadata(
             model,
             attention_metadata_before=attention_metadata_before,
@@ -610,17 +700,19 @@ def prune_model(
         )
     else:
         # No module was explicitly selected, so leave the model unchanged.
-        pruned_groups = []
+        num_pruned_groups = 0
     # Taylor pruning leaves calibration gradients on parameters. They are useful
     # only while pruner.step() is choosing channels, so clear them before saving.
     model.zero_grad(set_to_none=True)
-    if inspect_groups and before_shapes is not None:
-        after_shapes = _collect_target_shapes(
-            model,
-            normalized_modules,
-            normalized_target_block_indices,
-        )
+    after_shapes = _collect_target_shapes(
+        model,
+        normalized_modules,
+        normalized_target_block_indices,
+    )
+    target_pruning_summary = _build_target_pruning_summary(before_shapes, after_shapes)
+    if inspect_groups:
         _print_shape_changes(before_shapes, after_shapes)
+        _print_pruning_summary(target_pruning_summary)
     pruned_macs, pruned_params = _count_ops_and_params(model, example_inputs)
     attention_metadata_after = (
         _collect_attention_metadata(model, normalized_target_block_indices)
@@ -644,7 +736,8 @@ def prune_model(
         base_params=base_params,
         pruned_macs=pruned_macs,
         pruned_params=pruned_params,
-        pruned_groups=pruned_groups,
+        num_pruned_groups=num_pruned_groups,
+        target_pruning_summary=target_pruning_summary,
         attention_metadata_before=attention_metadata_before,
         attention_metadata_after=attention_metadata_after,
     )
@@ -663,7 +756,8 @@ def prune_model(
         print(f"[Pruning] modules: {list(normalized_modules)}")
         print(f"[Pruning] target blocks: {normalized_target_block_indices}")
         print(f"[Pruning] ratio: {pruning_ratio}")
-        print(f"[Pruning] groups pruned: {len(pruned_groups)}")
+        print(f"[Pruning] groups pruned: {num_pruned_groups}")
+        _print_pruning_summary(target_pruning_summary, max_lines=0)
         print(f"[Pruning] MACs: {base_macs:,} -> {pruned_macs:,}")
         print(f"[Pruning] Params: {base_params:,} -> {pruned_params:,}")
         if save_artifact:
