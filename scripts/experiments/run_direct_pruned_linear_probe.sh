@@ -8,8 +8,8 @@ GPU_ID="${GPU_ID:-7}"
 EPOCHS="${EPOCHS:-50}"
 TIMEZONE="${TIMEZONE:-Asia/Seoul}"
 LOG_DIR="${LOG_DIR:-logs/direct_pruned_linear_probe_$(TZ="$TIMEZONE" date +%Y%m%d_%H%M%S)}"
-# Set INSPECT_GROUPS=1 to print a few Torch-Pruning dependency groups during
-# the pruning phase. The default keeps logs shorter for full experiment runs.
+# Set INSPECT_GROUPS=1 to print target shape changes during the pruning phase.
+# The default keeps logs shorter for full experiment runs.
 INSPECT_GROUPS="${INSPECT_GROUPS:-0}"
 
 mkdir -p "$LOG_DIR"

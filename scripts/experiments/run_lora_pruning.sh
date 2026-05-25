@@ -8,9 +8,9 @@ set -euo pipefail
 GPU_ID="${GPU_ID:-7}"
 TIMEZONE="${TIMEZONE:-Asia/Seoul}"
 LOG_DIR="${LOG_DIR:-logs/lora_pruning_$(TZ="$TIMEZONE" date +%Y%m%d_%H%M%S)}"
-# Set INSPECT_GROUPS=1 to print a few Torch-Pruning dependency groups. This is
-# useful when validating a new pruning target, but it makes logs much longer, so
-# the default experiment run keeps it disabled.
+# Set INSPECT_GROUPS=1 to print target shape changes. This is useful when
+# validating a new pruning target, but it makes logs longer, so the default
+# experiment run keeps it disabled.
 INSPECT_GROUPS="${INSPECT_GROUPS:-0}"
 
 mkdir -p "$LOG_DIR"

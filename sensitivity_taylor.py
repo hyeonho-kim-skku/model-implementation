@@ -87,8 +87,7 @@ def build_parser():
     parser.add_argument("--calibration-batch-size", dest="calibration_batch_size", type=int, default=64, help="Batch size for Taylor calibration")
     parser.add_argument("--calibration-batches", dest="calibration_batches", type=int, default=10, help="Number of Taylor calibration batches")
     parser.add_argument("--calibration-split", dest="calibration_split", type=str, choices=["train", "test"], default="train", help="Dataset split for Taylor calibration")
-    parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print selected Torch-Pruning dependency groups")
-    parser.add_argument("--max-inspect-groups", dest="max_inspect_groups", type=int, default=3, help="Maximum inspected groups per trial")
+    parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print target shape changes after pruning")
     return parser
 
 
@@ -299,7 +298,6 @@ def run_pruned_trial(args, source, base_model, gradients, layer_idx, trial, eval
         global_pruning=args.global_pruning,
         round_to=args.round_to,
         inspect_groups=args.inspect_groups,
-        max_inspect_groups=args.max_inspect_groups,
         use_existing_taylor_gradients=True,
         existing_calibration_config=args.calibration_config,
         save_artifact=args.save_artifacts,

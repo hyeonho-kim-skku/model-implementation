@@ -35,8 +35,7 @@ def build_parser():
     parser.add_argument("--calibration-split", dest="calibration_split", type=str, choices=["train", "test"], default="train", help="Dataset split for Taylor calibration")
     parser.add_argument("--num-workers", dest="num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--data-root", dest="data_root", type=str, default="./data", help="Dataset root directory")
-    parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print selected Torch-Pruning dependency groups")
-    parser.add_argument("--max-inspect-groups", dest="max_inspect_groups", type=int, default=3, help="Maximum number of target groups to print when --inspect-groups is enabled")
+    parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print target shape changes after pruning")
     return parser
 
 
@@ -63,7 +62,6 @@ def main(args):
         num_workers=args.num_workers,
         data_root=args.data_root,
         inspect_groups=args.inspect_groups,
-        max_inspect_groups=args.max_inspect_groups,
         device=device,
     )
 
