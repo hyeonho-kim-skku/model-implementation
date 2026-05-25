@@ -8,10 +8,18 @@ set -euo pipefail
 GPU_ID="${GPU_ID:-7}"
 EPOCHS="${EPOCHS:-20}"
 MLP_TAG="${MLP_TAG:-mlp030}"
+DATASETS="${DATASETS:-cifar100,cub200,fgvc_aircraft,stanford_cars}"
 TIMEZONE="${TIMEZONE:-Asia/Seoul}"
 LOG_DIR="${LOG_DIR:-logs/taylor_pruned_lora_recovery_${MLP_TAG}_$(TZ="$TIMEZONE" date +%Y%m%d_%H%M%S)}"
 
 mkdir -p "$LOG_DIR"
+
+declare -A CONFIGS=(
+  [cifar100]="configs/timm_vit_taylor_pruned_lora_recovery_cifar100.yaml"
+  [cub200]="configs/timm_vit_taylor_pruned_lora_recovery_cub200.yaml"
+  [fgvc_aircraft]="configs/timm_vit_taylor_pruned_lora_recovery_fgvc_aircraft.yaml"
+  [stanford_cars]="configs/timm_vit_taylor_pruned_lora_recovery_stanford_cars.yaml"
+)
 
 run_experiment() {
   local name="$1"
@@ -35,6 +43,9 @@ run_experiment() {
   echo "[$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')] Finished ${name}"
 }
 
-run_experiment "taylor_pruned_lora_recovery_cifar100" "configs/timm_vit_taylor_pruned_lora_recovery_cifar100.yaml" "cifar100"
-run_experiment "taylor_pruned_lora_recovery_flowers102" "configs/timm_vit_taylor_pruned_lora_recovery_flowers102.yaml" "flowers102"
-run_experiment "taylor_pruned_lora_recovery_cub200" "configs/timm_vit_taylor_pruned_lora_recovery_cub200.yaml" "cub200"
+echo "Datasets: ${DATASETS}"
+
+IFS=',' read -ra selected_datasets <<< "$DATASETS"
+for dataset in "${selected_datasets[@]}"; do
+  run_experiment "taylor_pruned_lora_recovery_${dataset}" "${CONFIGS[$dataset]}" "$dataset"
+done

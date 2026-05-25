@@ -6,11 +6,19 @@ set -euo pipefail
 
 GPU_ID="${GPU_ID:-7}"
 MLP_TAG="${MLP_TAG:-mlp030}"
+DATASETS="${DATASETS:-cifar100,cub200,fgvc_aircraft,stanford_cars}"
 TIMEZONE="${TIMEZONE:-Asia/Seoul}"
 LOG_DIR="${LOG_DIR:-logs/taylor_pruned_eval_${MLP_TAG}_$(TZ="$TIMEZONE" date +%Y%m%d_%H%M%S)}"
 SAVE_JSON="${SAVE_JSON:-1}"
 
 mkdir -p "$LOG_DIR"
+
+declare -A CONFIGS=(
+  [cifar100]="configs/taylor_pruned_eval_cifar100.yaml"
+  [cub200]="configs/taylor_pruned_eval_cub200.yaml"
+  [fgvc_aircraft]="configs/taylor_pruned_eval_fgvc_aircraft.yaml"
+  [stanford_cars]="configs/taylor_pruned_eval_stanford_cars.yaml"
+)
 
 run_experiment() {
   local name="$1"
@@ -39,14 +47,9 @@ run_experiment() {
   echo "[$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')] Finished ${name}"
 }
 
-run_experiment "taylor_pruned_eval_cifar100" \
-  "configs/taylor_pruned_eval_cifar100.yaml" \
-  "cifar100"
+echo "Datasets: ${DATASETS}"
 
-run_experiment "taylor_pruned_eval_flowers102" \
-  "configs/taylor_pruned_eval_flowers102.yaml" \
-  "flowers102"
-
-run_experiment "taylor_pruned_eval_cub200" \
-  "configs/taylor_pruned_eval_cub200.yaml" \
-  "cub200"
+IFS=',' read -ra selected_datasets <<< "$DATASETS"
+for dataset in "${selected_datasets[@]}"; do
+  run_experiment "taylor_pruned_eval_${dataset}" "${CONFIGS[$dataset]}" "$dataset"
+done

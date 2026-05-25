@@ -1,0 +1,13 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_stanford_cars_supervised/0523-205731/best_cls_ckpt.pth
+output_dir: ./pruned/vit_base_stanford_cars_lora50_mlp030_taylor
+importance: taylor
+pruning_ratio: 0.30
+pruning_modules: mlp
+iterative_steps: 1
+global_pruning: false
+round_to:
+calibration_dataset: stanford_cars
+calibration_batch_size: 64
+calibration_batches: 10
+calibration_split: train
