@@ -22,7 +22,8 @@ def build_parser():
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True, help="Load pretrained timm weights for source_type=timm")
     parser.add_argument("--output-dir", dest="output_dir", type=str, default="./pruned", help="Directory to save pruned artifacts")
     parser.add_argument("--output-path", dest="output_path", type=str, default=None, help="Optional full path for the pruned artifact")
-    parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor"], default="magnitude", help="Importance criterion for structured pruning")
+    parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor", "activation_taylor"], default="magnitude", help="Importance criterion for structured pruning")
+    parser.add_argument("--activation-taylor-reduction", dest="activation_taylor_reduction", type=str, choices=["sum_abs", "abs_sum"], default="sum_abs", help="Reduction for activation_taylor scores")
     parser.add_argument("--pruning-ratio", dest="pruning_ratio", type=float, default=0.2, help="Structured pruning ratio")
     parser.add_argument("--pruning-modules", dest="pruning_modules", type=str, default=None, help="Comma-separated pruning targets: head,mlp")
     parser.add_argument("--target-block-indices", dest="target_block_indices", type=str, default=None, help="Optional comma-separated transformer block indices to prune")
@@ -59,6 +60,7 @@ def main(args):
         calibration_batch_size=args.calibration_batch_size,
         calibration_batches=args.calibration_batches,
         calibration_split=args.calibration_split,
+        activation_taylor_reduction=args.activation_taylor_reduction,
         num_workers=args.num_workers,
         data_root=args.data_root,
         inspect_groups=args.inspect_groups,

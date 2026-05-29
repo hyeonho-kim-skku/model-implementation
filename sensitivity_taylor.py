@@ -27,6 +27,7 @@ import yaml
 
 from datasets import get_loader
 from engine import evaluate_classifier
+from pruning.importance import MLPActivationTaylorCollector
 from pruning.source import build_pruning_source
 from pruning.structured import compute_taylor_gradients, prune_model
 
@@ -88,6 +89,8 @@ def build_parser():
     parser.add_argument("--calibration-batches", dest="calibration_batches", type=int, default=10, help="Number of Taylor calibration batches")
     parser.add_argument("--calibration-split", dest="calibration_split", type=str, choices=["train", "test"], default="train", help="Dataset split for Taylor calibration")
     parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print target shape changes after pruning")
+    parser.add_argument("--importance", dest="importance", type=str, choices=["taylor", "activation_taylor"], default="taylor", help="Taylor importance variant for the sweep")
+    parser.add_argument("--activation-taylor-reduction", dest="activation_taylor_reduction", type=str, choices=["sum_abs", "abs_sum"], default="sum_abs", help="Reduction for activation_taylor scores")
     return parser
 
 
@@ -123,6 +126,28 @@ def capture_gradients(model):
         name: parameter.grad.detach().cpu().clone()
         for name, parameter in model.named_parameters()
         if parameter.grad is not None
+    }
+
+
+def capture_activation_taylor_scores(model, scores):
+    """Snapshot activation scores by block index so deepcopy trials can reuse them."""
+
+    snapshot = {}
+    for block_idx, block in enumerate(model.encoder.blocks):
+        score = scores.get(block.mlp.fc1)
+        if score is not None:
+            snapshot[block_idx] = score.detach().cpu().clone()
+    return snapshot
+
+
+def restore_activation_taylor_scores(model, snapshot):
+    """Map block-index activation scores onto the copied trial model's fc1 modules."""
+
+    return {
+        model.encoder.blocks[block_idx].mlp.fc1: score.to(
+            model.encoder.blocks[block_idx].mlp.fc1.weight.device
+        ).clone()
+        for block_idx, score in snapshot.items()
     }
 
 
@@ -167,6 +192,12 @@ def reset_results(path, args, trials, layers, calibration_config, baseline_metri
             "batch_size": args.batch_size,
             "max_batches": args.max_batches,
             "pruning_modules": args.pruning_modules,
+            "importance": args.importance,
+            "activation_taylor_reduction": (
+                args.activation_taylor_reduction
+                if args.importance == "activation_taylor"
+                else None
+            ),
             "trials": trials,
             "target_layers": layers,
             "calibration": calibration_config,
@@ -184,12 +215,17 @@ def make_result_row(source, args, layer_idx, trial, metrics, artifact=None, path
 
     ratio = trial["ratio"]
     pruning_config = {
-        "importance": "taylor",
+        "importance": args.importance,
         "pruning_modules": args.pruning_modules,
         "target_block_indices": [layer_idx],
         "pruning_ratio": ratio,
         "global_pruning": args.global_pruning,
         "round_to": args.round_to,
+        "activation_taylor_reduction": (
+            args.activation_taylor_reduction
+            if args.importance == "activation_taylor"
+            else None
+        ),
     }
     pruning_stats = {
         "base_macs": None,
@@ -252,6 +288,10 @@ def is_head_only_pruning(pruning_modules):
     return modules == ["head"]
 
 
+def _normalize_pruning_modules_for_sensitivity(pruning_modules):
+    return tuple(item.strip().lower() for item in str(pruning_modules).split(",") if item.strip())
+
+
 def head_count_to_ratio(pruned_head_count, num_heads):
     """Return a ratio that makes Torch-Pruning's ceil(ratio * heads) choose count."""
 
@@ -276,12 +316,28 @@ def make_sweep_trials(args, model):
     return [{"ratio": ratio} for ratio in parse_float_list(args.ratios)]
 
 
-def run_pruned_trial(args, source, base_model, gradients, layer_idx, trial, eval_loader):
+def run_pruned_trial(
+    args,
+    source,
+    base_model,
+    gradients,
+    activation_taylor_scores,
+    layer_idx,
+    trial,
+    eval_loader,
+):
     """Run one independent (layer, ratio) pruning and evaluation trial."""
 
     ratio = trial["ratio"]
     trial_model = copy.deepcopy(base_model)
-    restore_gradients(trial_model, gradients)
+    existing_activation_taylor_scores = None
+    if args.importance == "activation_taylor":
+        existing_activation_taylor_scores = restore_activation_taylor_scores(
+            trial_model,
+            activation_taylor_scores,
+        )
+    else:
+        restore_gradients(trial_model, gradients)
 
     path = artifact_path(args, layer_idx, trial)
     artifact = prune_model(
@@ -290,16 +346,18 @@ def run_pruned_trial(args, source, base_model, gradients, layer_idx, trial, eval
         source_info=source.source_info,
         output_dir=os.path.dirname(path),
         output_path=path,
-        importance="taylor",
+        importance=args.importance,
         pruning_ratio=ratio,
         pruning_modules=args.pruning_modules,
         target_block_indices=[layer_idx],
         iterative_steps=1,
         global_pruning=args.global_pruning,
         round_to=args.round_to,
+        activation_taylor_reduction=args.activation_taylor_reduction,
         inspect_groups=args.inspect_groups,
         use_existing_taylor_gradients=True,
         existing_calibration_config=args.calibration_config,
+        existing_activation_taylor_scores=existing_activation_taylor_scores,
         save_artifact=args.save_artifacts,
         verbose=False,
         device=DEVICE,
@@ -340,22 +398,55 @@ def main(args):
     print(f"[Sensitivity] reference baseline acc={baseline_metrics['acc']:.2f}%")
 
     # Taylor calibration is the expensive part. Run it once on the unpruned
-    # model, then restore the same gradient snapshot for every independent trial.
-    args.calibration_config = compute_taylor_gradients(
-        model=base_model,
-        calibration_dataset=args.calibration_dataset,
-        calibration_batch_size=args.calibration_batch_size,
-        calibration_batches=args.calibration_batches,
-        calibration_split=args.calibration_split,
-        num_workers=args.num_workers,
-        data_root=args.data_root,
-        device=DEVICE,
-    )
-    gradients = capture_gradients(base_model)
-    if not gradients:
-        raise ValueError("Taylor calibration completed, but no parameter gradients were found.")
+    # model, then restore the same score snapshot for every independent trial.
+    activation_taylor_collector = None
+    if args.importance == "activation_taylor":
+        if _normalize_pruning_modules_for_sensitivity(args.pruning_modules) != ("mlp",):
+            raise ValueError(
+                "activation_taylor sensitivity currently supports pruning_modules='mlp' only."
+            )
+        activation_taylor_collector = MLPActivationTaylorCollector(
+            model=base_model,
+            target_block_indices=layers,
+            reduction=args.activation_taylor_reduction,
+        )
+    try:
+        args.calibration_config = compute_taylor_gradients(
+            model=base_model,
+            calibration_dataset=args.calibration_dataset,
+            calibration_batch_size=args.calibration_batch_size,
+            calibration_batches=args.calibration_batches,
+            calibration_split=args.calibration_split,
+            num_workers=args.num_workers,
+            data_root=args.data_root,
+            device=DEVICE,
+            activation_taylor_collector=activation_taylor_collector,
+        )
+    except Exception:
+        if activation_taylor_collector is not None:
+            activation_taylor_collector.remove()
+        raise
+    if args.importance == "activation_taylor":
+        activation_taylor_scores = capture_activation_taylor_scores(
+            base_model,
+            activation_taylor_collector.final_scores(),
+        )
+        activation_taylor_collector.remove()
+        gradients = {}
+        if not activation_taylor_scores:
+            raise ValueError(
+                "Activation Taylor calibration completed, but no activation scores were found."
+            )
+    else:
+        gradients = capture_gradients(base_model)
+        activation_taylor_scores = {}
+        if not gradients:
+            raise ValueError("Taylor calibration completed, but no parameter gradients were found.")
     print(f"[Sensitivity] calibration={args.calibration_config}")
-    print(f"[Sensitivity] gradient tensors={len(gradients)}")
+    if args.importance == "activation_taylor":
+        print(f"[Sensitivity] activation score tensors={len(activation_taylor_scores)}")
+    else:
+        print(f"[Sensitivity] gradient tensors={len(gradients)}")
 
     reset_results(args.results_path, args, trials, layers, args.calibration_config, baseline_metrics)
 
@@ -371,7 +462,16 @@ def main(args):
         else:
             trial_desc = f"pruned_heads={trial['pruned_head_count']}, ratio={trial['ratio']:.6f}"
         print(f"[Sensitivity] trial {trial_idx}/{total}: layer={layer_idx}, {trial_desc}")
-        row = run_pruned_trial(args, source, base_model, gradients, layer_idx, trial, eval_loader)
+        row = run_pruned_trial(
+            args,
+            source,
+            base_model,
+            gradients,
+            activation_taylor_scores,
+            layer_idx,
+            trial,
+            eval_loader,
+        )
         row.update({"trial_index": trial_idx, "total_trials": total})
         write_jsonl(args.results_path, row)
         print(f"[Sensitivity] acc={row['metrics']['acc']:.2f}%")

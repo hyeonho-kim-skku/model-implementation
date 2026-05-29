@@ -11,6 +11,11 @@ import torch.nn.functional as F
 import torch_pruning as tp
 
 from datasets import get_loader
+from pruning.importance import (
+    MLPActivationTaylorCollector,
+    MLPActivationTaylorImportance,
+    VALID_ACTIVATION_TAYLOR_REDUCTIONS,
+)
 from utils import move_to_device
 
 
@@ -136,11 +141,12 @@ def _count_ops_and_params(model, example_inputs):
     return int(macs), int(params)
 
 
-def _build_importance(importance):
+def _build_importance(importance, activation_taylor_scores=None):
     """Create the Torch-Pruning importance criterion.
 
     Magnitude uses only weights. Taylor uses weight * gradient, so gradients
     must be populated before pruner.step() asks this object to score groups.
+    Activation Taylor uses precomputed fc2-input activation scores.
     """
 
     importance = (importance or "magnitude").strip().lower()
@@ -153,8 +159,12 @@ def _build_importance(importance):
         return tp.importance.MagnitudeImportance(p=2, **common_kwargs), importance
     if importance == "taylor":
         return tp.importance.TaylorImportance(**common_kwargs), importance
+    if importance == "activation_taylor":
+        if activation_taylor_scores is None:
+            raise ValueError("activation_taylor_scores is required for activation_taylor.")
+        return MLPActivationTaylorImportance(activation_taylor_scores, **common_kwargs), importance
 
-    raise ValueError("importance must be 'magnitude' or 'taylor'.")
+    raise ValueError("importance must be 'magnitude', 'taylor', or 'activation_taylor'.")
 
 
 def _build_pruning_scope_config(
@@ -214,6 +224,7 @@ def _build_pruner(
     iterative_steps,
     global_pruning,
     round_to,
+    activation_taylor_scores=None,
 ):
     """Create a Torch-Pruning pruner for the selected target scopes.
 
@@ -231,7 +242,10 @@ def _build_pruner(
         targets.num_heads = {}
     """
 
-    importance, importance_type = _build_importance(importance)
+    importance, importance_type = _build_importance(
+        importance,
+        activation_taylor_scores=activation_taylor_scores,
+    )
     ignored_layers = [model.classifier]
     root_module_types = [nn.Linear]
     targets = _collect_pruning_targets(model, pruning_modules, target_block_indices)
@@ -271,8 +285,9 @@ def compute_taylor_gradients(
     num_workers,
     data_root,
     device,
+    activation_taylor_collector=None,
 ):
-    """Run a few supervised batches so TaylorImportance can read .grad fields."""
+    """Run supervised batches so Taylor pruning criteria can read gradients."""
 
     if calibration_dataset is None:
         raise ValueError("Taylor pruning needs calibration_dataset.")
@@ -300,8 +315,11 @@ def compute_taylor_gradients(
         logits = model(images)
         loss = F.cross_entropy(logits, labels)
         # Do not optimizer.step(). Taylor pruning only needs d(loss)/d(weight).
-        # Torch-Pruning reads these gradients later inside pruner.step().
+        # Torch-Pruning reads parameter gradients later for weight Taylor. For
+        # activation Taylor, the collector reads retained fc2-input gradients.
         loss.backward()
+        if activation_taylor_collector is not None:
+            activation_taylor_collector.accumulate_batch()
 
         processed_batches += 1
         total_examples += labels.size(0)
@@ -309,7 +327,7 @@ def compute_taylor_gradients(
     if processed_batches == 0:
         raise ValueError("Taylor pruning did not process any calibration batches.")
 
-    return {
+    calibration_config = {
         "dataset": calibration_dataset,
         "batch_size": calibration_batch_size,
         "requested_batches": calibration_batches,
@@ -318,6 +336,11 @@ def compute_taylor_gradients(
         "processed_batches": processed_batches,
         "processed_examples": total_examples,
     }
+    if activation_taylor_collector is not None:
+        calibration_config["activation_taylor_reduction"] = (
+            activation_taylor_collector.reduction
+        )
+    return calibration_config
 
 
 def _linear_shape(layer):
@@ -538,6 +561,7 @@ def _build_pruning_artifact(
     iterative_steps,
     global_pruning,
     round_to,
+    activation_taylor_reduction,
     base_macs,
     base_params,
     pruned_macs,
@@ -563,6 +587,7 @@ def _build_pruning_artifact(
             "iterative_steps": iterative_steps,
             "global_pruning": global_pruning,
             "round_to": round_to,
+            "activation_taylor_reduction": activation_taylor_reduction,
             "calibration": calibration_config,
         },
         "pruning_stats": {
@@ -595,11 +620,13 @@ def prune_model(
     calibration_batch_size=64,
     calibration_batches=1,
     calibration_split="train",
+    activation_taylor_reduction="sum_abs",
     num_workers=4,
     data_root="./data",
     inspect_groups=False,
     use_existing_taylor_gradients=False,
     existing_calibration_config=None,
+    existing_activation_taylor_scores=None,
     save_artifact=True,
     verbose=True,
     device="cpu",
@@ -608,7 +635,7 @@ def prune_model(
 
     target_block_indices limits pruning roots to selected transformer blocks.
     use_existing_taylor_gradients is for sweep jobs that already populated
-    parameter.grad and want to avoid repeated Taylor calibration passes.
+    parameter.grad or activation scores and want to avoid repeated calibration.
     save_artifact=False is useful for sensitivity sweeps that only need metrics.
     verbose=False suppresses per-trial logs during large sweeps.
     """
@@ -647,6 +674,21 @@ def prune_model(
     base_macs, base_params = _count_ops_and_params(model, example_inputs)
     calibration_config = None
     importance_type = (importance or "magnitude").strip().lower()
+    activation_taylor_scores = None
+    if importance_type == "activation_taylor":
+        if activation_taylor_reduction not in VALID_ACTIVATION_TAYLOR_REDUCTIONS:
+            raise ValueError(
+                "activation_taylor_reduction must be one of "
+                f"{sorted(VALID_ACTIVATION_TAYLOR_REDUCTIONS)}, "
+                f"got {activation_taylor_reduction!r}."
+            )
+        if normalized_modules != ("mlp",):
+            raise ValueError(
+                "activation_taylor currently supports pruning_modules='mlp' only."
+            )
+        activation_taylor_scores = (
+            {} if existing_activation_taylor_scores is None else existing_activation_taylor_scores
+        )
     if normalized_modules:
         # The pruner builds the dependency graph and decides which channel groups
         # can be removed together. The importance object only decides the ranking.
@@ -660,8 +702,9 @@ def prune_model(
             iterative_steps=iterative_steps,
             global_pruning=global_pruning,
             round_to=round_to,
+            activation_taylor_scores=activation_taylor_scores,
         )
-        if importance_type == "taylor":
+        if importance_type in {"taylor", "activation_taylor"}:
             # Taylor scores are based on weight * gradient, so run calibration
             # backward passes before pruner.step() asks for channel scores.
             if iterative_steps != 1:
@@ -671,25 +714,45 @@ def prune_model(
                 )
             if use_existing_taylor_gradients:
                 # The caller is responsible for restoring parameter.grad before
-                # prune_model is called. TaylorImportance reads those gradients
-                # during pruner.step().
+                # prune_model is called, or for passing activation scores.
                 if existing_calibration_config is None:
                     raise ValueError(
                         "existing_calibration_config is required when "
                         "use_existing_taylor_gradients=True."
                     )
+                if importance_type == "activation_taylor" and not activation_taylor_scores:
+                    raise ValueError(
+                        "existing_activation_taylor_scores is required when "
+                        "activation_taylor uses existing calibration."
+                    )
                 calibration_config = existing_calibration_config
             else:
-                calibration_config = compute_taylor_gradients(
-                    model=model,
-                    calibration_dataset=calibration_dataset,
-                    calibration_batch_size=calibration_batch_size,
-                    calibration_batches=calibration_batches,
-                    calibration_split=calibration_split,
-                    num_workers=num_workers,
-                    data_root=data_root,
-                    device=device,
-                )
+                activation_taylor_collector = None
+                if importance_type == "activation_taylor":
+                    activation_taylor_collector = MLPActivationTaylorCollector(
+                        model=model,
+                        target_block_indices=normalized_target_block_indices,
+                        reduction=activation_taylor_reduction,
+                    )
+                try:
+                    calibration_config = compute_taylor_gradients(
+                        model=model,
+                        calibration_dataset=calibration_dataset,
+                        calibration_batch_size=calibration_batch_size,
+                        calibration_batches=calibration_batches,
+                        calibration_split=calibration_split,
+                        num_workers=num_workers,
+                        data_root=data_root,
+                        device=device,
+                        activation_taylor_collector=activation_taylor_collector,
+                    )
+                    if activation_taylor_collector is not None:
+                        activation_taylor_scores.update(
+                            activation_taylor_collector.final_scores()
+                        )
+                finally:
+                    if activation_taylor_collector is not None:
+                        activation_taylor_collector.remove()
         history_before = len(pruner.pruning_history())
         pruner.step()
         num_pruned_groups = len(pruner.pruning_history()) - history_before
@@ -732,6 +795,9 @@ def prune_model(
         iterative_steps=iterative_steps,
         global_pruning=global_pruning,
         round_to=round_to,
+        activation_taylor_reduction=(
+            activation_taylor_reduction if importance_type == "activation_taylor" else None
+        ),
         base_macs=base_macs,
         base_params=base_params,
         pruned_macs=pruned_macs,
