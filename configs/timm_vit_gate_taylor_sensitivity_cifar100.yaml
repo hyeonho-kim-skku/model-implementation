@@ -1,0 +1,24 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_cifar100_supervised/0511-224807/best_cls_ckpt.pth
+dataset: cifar100
+batch_size: 64
+split: test
+num_workers: 4
+max_batches:
+data_root: ./data
+results_path: ./pruned/vit_base_cifar100_lora50_gate_taylor_fc1_out_signed_damage_full_sensitivity/results.jsonl
+artifact_dir: ./pruned/vit_base_cifar100_lora50_gate_taylor_fc1_out_signed_damage_full_sensitivity/artifacts
+save_artifacts: false
+ratios: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+target_layers:
+pruning_modules: mlp
+importance: gate_taylor
+gate_taylor_location: fc1_out
+gate_taylor_reduction: signed_damage
+global_pruning: false
+round_to:
+calibration_dataset: cifar100
+calibration_batch_size: 64
+calibration_batches: full
+calibration_seed: 42
+calibration_split: train
