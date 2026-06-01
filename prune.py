@@ -11,6 +11,17 @@ from pruning.structured import prune_model
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def parse_calibration_batches(value):
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    value = str(value).strip().lower()
+    if value in {"", "none", "null", "full", "all"}:
+        return None
+    return int(value)
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, help="Path to the yaml config file")
@@ -22,8 +33,10 @@ def build_parser():
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True, help="Load pretrained timm weights for source_type=timm")
     parser.add_argument("--output-dir", dest="output_dir", type=str, default="./pruned", help="Directory to save pruned artifacts")
     parser.add_argument("--output-path", dest="output_path", type=str, default=None, help="Optional full path for the pruned artifact")
-    parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor", "activation_taylor"], default="magnitude", help="Importance criterion for structured pruning")
+    parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor", "activation_taylor", "gate_taylor"], default="magnitude", help="Importance criterion for structured pruning")
     parser.add_argument("--activation-taylor-reduction", dest="activation_taylor_reduction", type=str, choices=["sum_abs", "abs_sum"], default="sum_abs", help="Reduction for activation_taylor scores")
+    parser.add_argument("--gate-taylor-reduction", dest="gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for gate_taylor scores")
+    parser.add_argument("--gate-taylor-location", dest="gate_taylor_location", type=str, default="fc1_out", help="Gate insertion point for gate_taylor")
     parser.add_argument("--pruning-ratio", dest="pruning_ratio", type=float, default=0.2, help="Structured pruning ratio")
     parser.add_argument("--pruning-modules", dest="pruning_modules", type=str, default=None, help="Comma-separated pruning targets: head,mlp")
     parser.add_argument("--target-block-indices", dest="target_block_indices", type=str, default=None, help="Optional comma-separated transformer block indices to prune")
@@ -32,8 +45,9 @@ def build_parser():
     parser.add_argument("--round-to", dest="round_to", type=int, default=None, help="Round pruned dimensions to a multiple")
     parser.add_argument("--calibration-dataset", dest="calibration_dataset", type=str, default=None, help="Dataset used to compute Taylor gradients")
     parser.add_argument("--calibration-batch-size", dest="calibration_batch_size", type=int, default=64, help="Batch size for Taylor calibration")
-    parser.add_argument("--calibration-batches", dest="calibration_batches", type=int, default=1, help="Number of Taylor calibration batches")
+    parser.add_argument("--calibration-batches", dest="calibration_batches", type=parse_calibration_batches, default=1, help="Number of Taylor calibration batches, or 'full'")
     parser.add_argument("--calibration-split", dest="calibration_split", type=str, choices=["train", "test"], default="train", help="Dataset split for Taylor calibration")
+    parser.add_argument("--calibration-seed", dest="calibration_seed", type=int, default=None, help="Optional DataLoader shuffle seed for Taylor calibration")
     parser.add_argument("--num-workers", dest="num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--data-root", dest="data_root", type=str, default="./data", help="Dataset root directory")
     parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print target shape changes after pruning")
@@ -60,7 +74,10 @@ def main(args):
         calibration_batch_size=args.calibration_batch_size,
         calibration_batches=args.calibration_batches,
         calibration_split=args.calibration_split,
+        calibration_seed=args.calibration_seed,
         activation_taylor_reduction=args.activation_taylor_reduction,
+        gate_taylor_reduction=args.gate_taylor_reduction,
+        gate_taylor_location=args.gate_taylor_location,
         num_workers=args.num_workers,
         data_root=args.data_root,
         inspect_groups=args.inspect_groups,
@@ -76,5 +93,6 @@ if __name__ == "__main__":
             config_dict = yaml.safe_load(file)
         parser.set_defaults(**config_dict)
     args = parser.parse_args()
+    args.calibration_batches = parse_calibration_batches(args.calibration_batches)
 
     main(args)

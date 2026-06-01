@@ -27,7 +27,7 @@ import yaml
 
 from datasets import get_loader
 from engine import evaluate_classifier
-from pruning.importance import MLPActivationTaylorCollector
+from pruning.importance import MLPActivationTaylorCollector, MLPGateTaylorCollector
 from pruning.source import build_pruning_source
 from pruning.structured import compute_taylor_gradients, prune_model
 
@@ -53,6 +53,19 @@ def parse_int_list(value):
         return [int(item) for item in value]
     value = str(value).strip()
     return None if not value else [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def parse_calibration_batches(value):
+    """Accept an integer batch limit or 'full' for full calibration."""
+
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    value = str(value).strip().lower()
+    if value in {"", "none", "null", "full", "all"}:
+        return None
+    return int(value)
 
 
 def build_parser():
@@ -86,11 +99,14 @@ def build_parser():
     parser.add_argument("--round-to", dest="round_to", type=int, default=None, help="Round pruned dimensions to a multiple")
     parser.add_argument("--calibration-dataset", dest="calibration_dataset", type=str, default=None, help="Dataset used to compute Taylor gradients")
     parser.add_argument("--calibration-batch-size", dest="calibration_batch_size", type=int, default=64, help="Batch size for Taylor calibration")
-    parser.add_argument("--calibration-batches", dest="calibration_batches", type=int, default=10, help="Number of Taylor calibration batches")
+    parser.add_argument("--calibration-batches", dest="calibration_batches", type=parse_calibration_batches, default=10, help="Number of Taylor calibration batches, or 'full'")
     parser.add_argument("--calibration-split", dest="calibration_split", type=str, choices=["train", "test"], default="train", help="Dataset split for Taylor calibration")
+    parser.add_argument("--calibration-seed", dest="calibration_seed", type=int, default=None, help="Optional DataLoader shuffle seed for Taylor calibration")
     parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print target shape changes after pruning")
-    parser.add_argument("--importance", dest="importance", type=str, choices=["taylor", "activation_taylor"], default="taylor", help="Taylor importance variant for the sweep")
+    parser.add_argument("--importance", dest="importance", type=str, choices=["taylor", "activation_taylor", "gate_taylor"], default="taylor", help="Taylor importance variant for the sweep")
     parser.add_argument("--activation-taylor-reduction", dest="activation_taylor_reduction", type=str, choices=["sum_abs", "abs_sum"], default="sum_abs", help="Reduction for activation_taylor scores")
+    parser.add_argument("--gate-taylor-reduction", dest="gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for gate_taylor scores")
+    parser.add_argument("--gate-taylor-location", dest="gate_taylor_location", type=str, default="fc1_out", help="Gate insertion point for gate_taylor")
     return parser
 
 
@@ -129,8 +145,8 @@ def capture_gradients(model):
     }
 
 
-def capture_activation_taylor_scores(model, scores):
-    """Snapshot activation scores by block index so deepcopy trials can reuse them."""
+def capture_mlp_taylor_scores(model, scores):
+    """Snapshot fc1-keyed MLP scores by block index so deepcopy trials can reuse them."""
 
     snapshot = {}
     for block_idx, block in enumerate(model.encoder.blocks):
@@ -140,8 +156,8 @@ def capture_activation_taylor_scores(model, scores):
     return snapshot
 
 
-def restore_activation_taylor_scores(model, snapshot):
-    """Map block-index activation scores onto the copied trial model's fc1 modules."""
+def restore_mlp_taylor_scores(model, snapshot):
+    """Map block-index MLP scores onto the copied trial model's fc1 modules."""
 
     return {
         model.encoder.blocks[block_idx].mlp.fc1: score.to(
@@ -198,6 +214,12 @@ def reset_results(path, args, trials, layers, calibration_config, baseline_metri
                 if args.importance == "activation_taylor"
                 else None
             ),
+            "gate_taylor_reduction": (
+                args.gate_taylor_reduction if args.importance == "gate_taylor" else None
+            ),
+            "gate_taylor_location": (
+                args.gate_taylor_location if args.importance == "gate_taylor" else None
+            ),
             "trials": trials,
             "target_layers": layers,
             "calibration": calibration_config,
@@ -225,6 +247,12 @@ def make_result_row(source, args, layer_idx, trial, metrics, artifact=None, path
             args.activation_taylor_reduction
             if args.importance == "activation_taylor"
             else None
+        ),
+        "gate_taylor_reduction": (
+            args.gate_taylor_reduction if args.importance == "gate_taylor" else None
+        ),
+        "gate_taylor_location": (
+            args.gate_taylor_location if args.importance == "gate_taylor" else None
         ),
     }
     pruning_stats = {
@@ -321,7 +349,7 @@ def run_pruned_trial(
     source,
     base_model,
     gradients,
-    activation_taylor_scores,
+    mlp_taylor_scores,
     layer_idx,
     trial,
     eval_loader,
@@ -331,10 +359,16 @@ def run_pruned_trial(
     ratio = trial["ratio"]
     trial_model = copy.deepcopy(base_model)
     existing_activation_taylor_scores = None
+    existing_gate_taylor_scores = None
     if args.importance == "activation_taylor":
-        existing_activation_taylor_scores = restore_activation_taylor_scores(
+        existing_activation_taylor_scores = restore_mlp_taylor_scores(
             trial_model,
-            activation_taylor_scores,
+            mlp_taylor_scores,
+        )
+    elif args.importance == "gate_taylor":
+        existing_gate_taylor_scores = restore_mlp_taylor_scores(
+            trial_model,
+            mlp_taylor_scores,
         )
     else:
         restore_gradients(trial_model, gradients)
@@ -354,10 +388,13 @@ def run_pruned_trial(
         global_pruning=args.global_pruning,
         round_to=args.round_to,
         activation_taylor_reduction=args.activation_taylor_reduction,
+        gate_taylor_reduction=args.gate_taylor_reduction,
+        gate_taylor_location=args.gate_taylor_location,
         inspect_groups=args.inspect_groups,
         use_existing_taylor_gradients=True,
         existing_calibration_config=args.calibration_config,
         existing_activation_taylor_scores=existing_activation_taylor_scores,
+        existing_gate_taylor_scores=existing_gate_taylor_scores,
         save_artifact=args.save_artifacts,
         verbose=False,
         device=DEVICE,
@@ -399,17 +436,25 @@ def main(args):
 
     # Taylor calibration is the expensive part. Run it once on the unpruned
     # model, then restore the same score snapshot for every independent trial.
-    activation_taylor_collector = None
-    if args.importance == "activation_taylor":
+    mlp_taylor_collector = None
+    if args.importance in {"activation_taylor", "gate_taylor"}:
         if _normalize_pruning_modules_for_sensitivity(args.pruning_modules) != ("mlp",):
             raise ValueError(
-                "activation_taylor sensitivity currently supports pruning_modules='mlp' only."
+                f"{args.importance} sensitivity currently supports pruning_modules='mlp' only."
             )
-        activation_taylor_collector = MLPActivationTaylorCollector(
-            model=base_model,
-            target_block_indices=layers,
-            reduction=args.activation_taylor_reduction,
-        )
+        if args.importance == "activation_taylor":
+            mlp_taylor_collector = MLPActivationTaylorCollector(
+                model=base_model,
+                target_block_indices=layers,
+                reduction=args.activation_taylor_reduction,
+            )
+        else:
+            mlp_taylor_collector = MLPGateTaylorCollector(
+                model=base_model,
+                target_block_indices=layers,
+                reduction=args.gate_taylor_reduction,
+                gate_location=args.gate_taylor_location,
+            )
     try:
         args.calibration_config = compute_taylor_gradients(
             model=base_model,
@@ -420,31 +465,37 @@ def main(args):
             num_workers=args.num_workers,
             data_root=args.data_root,
             device=DEVICE,
-            activation_taylor_collector=activation_taylor_collector,
+            calibration_seed=args.calibration_seed,
+            activation_taylor_collector=(
+                mlp_taylor_collector if args.importance == "activation_taylor" else None
+            ),
+            gate_taylor_collector=(
+                mlp_taylor_collector if args.importance == "gate_taylor" else None
+            ),
         )
     except Exception:
-        if activation_taylor_collector is not None:
-            activation_taylor_collector.remove()
+        if mlp_taylor_collector is not None:
+            mlp_taylor_collector.remove()
         raise
-    if args.importance == "activation_taylor":
-        activation_taylor_scores = capture_activation_taylor_scores(
+    if args.importance in {"activation_taylor", "gate_taylor"}:
+        mlp_taylor_scores = capture_mlp_taylor_scores(
             base_model,
-            activation_taylor_collector.final_scores(),
+            mlp_taylor_collector.final_scores(),
         )
-        activation_taylor_collector.remove()
+        mlp_taylor_collector.remove()
         gradients = {}
-        if not activation_taylor_scores:
+        if not mlp_taylor_scores:
             raise ValueError(
-                "Activation Taylor calibration completed, but no activation scores were found."
+                f"{args.importance} calibration completed, but no MLP scores were found."
             )
     else:
         gradients = capture_gradients(base_model)
-        activation_taylor_scores = {}
+        mlp_taylor_scores = {}
         if not gradients:
             raise ValueError("Taylor calibration completed, but no parameter gradients were found.")
     print(f"[Sensitivity] calibration={args.calibration_config}")
-    if args.importance == "activation_taylor":
-        print(f"[Sensitivity] activation score tensors={len(activation_taylor_scores)}")
+    if args.importance in {"activation_taylor", "gate_taylor"}:
+        print(f"[Sensitivity] MLP score tensors={len(mlp_taylor_scores)}")
     else:
         print(f"[Sensitivity] gradient tensors={len(gradients)}")
 
@@ -467,7 +518,7 @@ def main(args):
             source,
             base_model,
             gradients,
-            activation_taylor_scores,
+            mlp_taylor_scores,
             layer_idx,
             trial,
             eval_loader,
@@ -485,4 +536,6 @@ if __name__ == "__main__":
     if args.config:
         with open(args.config, "r") as file:
             parser.set_defaults(**yaml.safe_load(file))
-    main(parser.parse_args())
+    args = parser.parse_args()
+    args.calibration_batches = parse_calibration_batches(args.calibration_batches)
+    main(args)

@@ -14,12 +14,30 @@ from datasets import get_loader
 from pruning.importance import (
     MLPActivationTaylorCollector,
     MLPActivationTaylorImportance,
+    MLPGateTaylorCollector,
     VALID_ACTIVATION_TAYLOR_REDUCTIONS,
+    VALID_GATE_TAYLOR_REDUCTIONS,
+    VALID_GATE_TAYLOR_LOCATIONS,
 )
 from utils import move_to_device
 
 
 VALID_PRUNING_MODULES = {"head", "mlp"}
+
+
+def _normalize_calibration_batches(calibration_batches):
+    """Accept an integer batch limit or None/full for the whole loader."""
+
+    if calibration_batches is None:
+        return None
+    if isinstance(calibration_batches, str):
+        value = calibration_batches.strip().lower()
+        if value in {"", "none", "null", "full", "all"}:
+            return None
+        calibration_batches = int(value)
+    if calibration_batches < 0:
+        raise ValueError("calibration_batches must be non-negative or full.")
+    return calibration_batches
 
 
 @dataclass(frozen=True)
@@ -141,18 +159,23 @@ def _count_ops_and_params(model, example_inputs):
     return int(macs), int(params)
 
 
-def _build_importance(importance, activation_taylor_scores=None):
+def _build_importance(importance, activation_taylor_scores=None, gate_taylor_scores=None):
     """Create the Torch-Pruning importance criterion.
 
     Magnitude uses only weights. Taylor uses weight * gradient, so gradients
     must be populated before pruner.step() asks this object to score groups.
-    Activation Taylor uses precomputed fc2-input activation scores.
+    Activation Taylor uses precomputed fc2-input activation scores. Gate Taylor
+    uses precomputed explicit gate-gradient scores.
     """
 
     importance = (importance or "magnitude").strip().lower()
     common_kwargs = {
         "group_reduction": "mean",
         "normalizer": "mean",
+    }
+    gate_taylor_kwargs = {
+        "group_reduction": "mean",
+        "normalizer": None,
     }
 
     if importance == "magnitude":
@@ -163,8 +186,14 @@ def _build_importance(importance, activation_taylor_scores=None):
         if activation_taylor_scores is None:
             raise ValueError("activation_taylor_scores is required for activation_taylor.")
         return MLPActivationTaylorImportance(activation_taylor_scores, **common_kwargs), importance
+    if importance == "gate_taylor":
+        if gate_taylor_scores is None:
+            raise ValueError("gate_taylor_scores is required for gate_taylor.")
+        return MLPActivationTaylorImportance(gate_taylor_scores, **gate_taylor_kwargs), importance
 
-    raise ValueError("importance must be 'magnitude', 'taylor', or 'activation_taylor'.")
+    raise ValueError(
+        "importance must be 'magnitude', 'taylor', 'activation_taylor', or 'gate_taylor'."
+    )
 
 
 def _build_pruning_scope_config(
@@ -225,6 +254,7 @@ def _build_pruner(
     global_pruning,
     round_to,
     activation_taylor_scores=None,
+    gate_taylor_scores=None,
 ):
     """Create a Torch-Pruning pruner for the selected target scopes.
 
@@ -245,6 +275,7 @@ def _build_pruner(
     importance, importance_type = _build_importance(
         importance,
         activation_taylor_scores=activation_taylor_scores,
+        gate_taylor_scores=gate_taylor_scores,
     )
     ignored_layers = [model.classifier]
     root_module_types = [nn.Linear]
@@ -285,12 +316,20 @@ def compute_taylor_gradients(
     num_workers,
     data_root,
     device,
+    calibration_seed=None,
     activation_taylor_collector=None,
+    gate_taylor_collector=None,
 ):
     """Run supervised batches so Taylor pruning criteria can read gradients."""
 
     if calibration_dataset is None:
         raise ValueError("Taylor pruning needs calibration_dataset.")
+
+    calibration_batches = _normalize_calibration_batches(calibration_batches)
+    generator = None
+    if calibration_seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(int(calibration_seed))
 
     dataloader = get_loader(
         calibration_dataset,
@@ -301,6 +340,7 @@ def compute_taylor_gradients(
         drop_last=False,
         num_workers=num_workers,
         data_root=data_root,
+        generator=generator,
     )
 
     model.eval()
@@ -309,17 +349,20 @@ def compute_taylor_gradients(
     processed_batches = 0
     total_examples = 0
     for batch_idx, batch in enumerate(dataloader):
-        if batch_idx >= calibration_batches:
+        if calibration_batches is not None and batch_idx >= calibration_batches:
             break
         images, labels = move_to_device(batch, device)
         logits = model(images)
-        loss = F.cross_entropy(logits, labels)
+        loss = F.cross_entropy(logits, labels, reduction="sum")
         # Do not optimizer.step(). Taylor pruning only needs d(loss)/d(weight).
         # Torch-Pruning reads parameter gradients later for weight Taylor. For
-        # activation Taylor, the collector reads retained fc2-input gradients.
+        # activation/gate Taylor, the collectors read retained activation
+        # gradients or explicit gate gradients.
         loss.backward()
         if activation_taylor_collector is not None:
             activation_taylor_collector.accumulate_batch()
+        if gate_taylor_collector is not None:
+            gate_taylor_collector.accumulate_batch()
 
         processed_batches += 1
         total_examples += labels.size(0)
@@ -330,9 +373,13 @@ def compute_taylor_gradients(
     calibration_config = {
         "dataset": calibration_dataset,
         "batch_size": calibration_batch_size,
-        "requested_batches": calibration_batches,
+        "requested_batches": calibration_batches
+        if calibration_batches is not None
+        else "full",
         "split": calibration_split,
         "transform_mode": "test",
+        "loss_reduction": "sum",
+        "seed": calibration_seed,
         "processed_batches": processed_batches,
         "processed_examples": total_examples,
     }
@@ -340,6 +387,9 @@ def compute_taylor_gradients(
         calibration_config["activation_taylor_reduction"] = (
             activation_taylor_collector.reduction
         )
+    if gate_taylor_collector is not None:
+        calibration_config["gate_taylor_reduction"] = gate_taylor_collector.reduction
+        calibration_config["gate_taylor_location"] = gate_taylor_collector.gate_location
     return calibration_config
 
 
@@ -561,7 +611,11 @@ def _build_pruning_artifact(
     iterative_steps,
     global_pruning,
     round_to,
+    importance_group_reduction,
+    importance_normalizer,
     activation_taylor_reduction,
+    gate_taylor_reduction,
+    gate_taylor_location,
     base_macs,
     base_params,
     pruned_macs,
@@ -587,7 +641,11 @@ def _build_pruning_artifact(
             "iterative_steps": iterative_steps,
             "global_pruning": global_pruning,
             "round_to": round_to,
+            "importance_group_reduction": importance_group_reduction,
+            "importance_normalizer": importance_normalizer,
             "activation_taylor_reduction": activation_taylor_reduction,
+            "gate_taylor_reduction": gate_taylor_reduction,
+            "gate_taylor_location": gate_taylor_location,
             "calibration": calibration_config,
         },
         "pruning_stats": {
@@ -620,13 +678,17 @@ def prune_model(
     calibration_batch_size=64,
     calibration_batches=1,
     calibration_split="train",
+    calibration_seed=None,
     activation_taylor_reduction="sum_abs",
+    gate_taylor_reduction="sum_abs",
+    gate_taylor_location="fc1_out",
     num_workers=4,
     data_root="./data",
     inspect_groups=False,
     use_existing_taylor_gradients=False,
     existing_calibration_config=None,
     existing_activation_taylor_scores=None,
+    existing_gate_taylor_scores=None,
     save_artifact=True,
     verbose=True,
     device="cpu",
@@ -674,7 +736,10 @@ def prune_model(
     base_macs, base_params = _count_ops_and_params(model, example_inputs)
     calibration_config = None
     importance_type = (importance or "magnitude").strip().lower()
+    importance_group_reduction = "mean"
+    importance_normalizer = None if importance_type == "gate_taylor" else "mean"
     activation_taylor_scores = None
+    gate_taylor_scores = None
     if importance_type == "activation_taylor":
         if activation_taylor_reduction not in VALID_ACTIVATION_TAYLOR_REDUCTIONS:
             raise ValueError(
@@ -688,6 +753,23 @@ def prune_model(
             )
         activation_taylor_scores = (
             {} if existing_activation_taylor_scores is None else existing_activation_taylor_scores
+        )
+    if importance_type == "gate_taylor":
+        if gate_taylor_reduction not in VALID_GATE_TAYLOR_REDUCTIONS:
+            raise ValueError(
+                "gate_taylor reduction must be one of "
+                f"{sorted(VALID_GATE_TAYLOR_REDUCTIONS)}, "
+                f"got {gate_taylor_reduction!r}."
+            )
+        if gate_taylor_location not in VALID_GATE_TAYLOR_LOCATIONS:
+            raise ValueError(
+                "gate_taylor_location must be one of "
+                f"{sorted(VALID_GATE_TAYLOR_LOCATIONS)}, got {gate_taylor_location!r}."
+            )
+        if normalized_modules != ("mlp",):
+            raise ValueError("gate_taylor currently supports pruning_modules='mlp' only.")
+        gate_taylor_scores = (
+            {} if existing_gate_taylor_scores is None else existing_gate_taylor_scores
         )
     if normalized_modules:
         # The pruner builds the dependency graph and decides which channel groups
@@ -703,8 +785,9 @@ def prune_model(
             global_pruning=global_pruning,
             round_to=round_to,
             activation_taylor_scores=activation_taylor_scores,
+            gate_taylor_scores=gate_taylor_scores,
         )
-        if importance_type in {"taylor", "activation_taylor"}:
+        if importance_type in {"taylor", "activation_taylor", "gate_taylor"}:
             # Taylor scores are based on weight * gradient, so run calibration
             # backward passes before pruner.step() asks for channel scores.
             if iterative_steps != 1:
@@ -725,14 +808,27 @@ def prune_model(
                         "existing_activation_taylor_scores is required when "
                         "activation_taylor uses existing calibration."
                     )
+                if importance_type == "gate_taylor" and not gate_taylor_scores:
+                    raise ValueError(
+                        "existing_gate_taylor_scores is required when "
+                        "gate_taylor uses existing calibration."
+                    )
                 calibration_config = existing_calibration_config
             else:
                 activation_taylor_collector = None
+                gate_taylor_collector = None
                 if importance_type == "activation_taylor":
                     activation_taylor_collector = MLPActivationTaylorCollector(
                         model=model,
                         target_block_indices=normalized_target_block_indices,
                         reduction=activation_taylor_reduction,
+                    )
+                if importance_type == "gate_taylor":
+                    gate_taylor_collector = MLPGateTaylorCollector(
+                        model=model,
+                        target_block_indices=normalized_target_block_indices,
+                        reduction=gate_taylor_reduction,
+                        gate_location=gate_taylor_location,
                     )
                 try:
                     calibration_config = compute_taylor_gradients(
@@ -744,15 +840,21 @@ def prune_model(
                         num_workers=num_workers,
                         data_root=data_root,
                         device=device,
+                        calibration_seed=calibration_seed,
                         activation_taylor_collector=activation_taylor_collector,
+                        gate_taylor_collector=gate_taylor_collector,
                     )
                     if activation_taylor_collector is not None:
                         activation_taylor_scores.update(
                             activation_taylor_collector.final_scores()
                         )
+                    if gate_taylor_collector is not None:
+                        gate_taylor_scores.update(gate_taylor_collector.final_scores())
                 finally:
                     if activation_taylor_collector is not None:
                         activation_taylor_collector.remove()
+                    if gate_taylor_collector is not None:
+                        gate_taylor_collector.remove()
         history_before = len(pruner.pruning_history())
         pruner.step()
         num_pruned_groups = len(pruner.pruning_history()) - history_before
@@ -795,9 +897,15 @@ def prune_model(
         iterative_steps=iterative_steps,
         global_pruning=global_pruning,
         round_to=round_to,
+        importance_group_reduction=importance_group_reduction,
+        importance_normalizer=importance_normalizer,
         activation_taylor_reduction=(
-            activation_taylor_reduction if importance_type == "activation_taylor" else None
+            activation_taylor_reduction
+            if importance_type == "activation_taylor"
+            else None
         ),
+        gate_taylor_reduction=gate_taylor_reduction if importance_type == "gate_taylor" else None,
+        gate_taylor_location=gate_taylor_location if importance_type == "gate_taylor" else None,
         base_macs=base_macs,
         base_params=base_params,
         pruned_macs=pruned_macs,
@@ -817,6 +925,8 @@ def prune_model(
     if verbose:
         print(f"[Pruning] source: {source_info}")
         print(f"[Pruning] importance: {importance_type}")
+        print(f"[Pruning] importance group reduction: {importance_group_reduction}")
+        print(f"[Pruning] importance normalizer: {importance_normalizer}")
         if calibration_config is not None:
             print(f"[Pruning] calibration: {calibration_config}")
         print(f"[Pruning] modules: {list(normalized_modules)}")

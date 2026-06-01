@@ -7,6 +7,8 @@ import torch_pruning as tp
 
 
 VALID_ACTIVATION_TAYLOR_REDUCTIONS = {"sum_abs", "abs_sum"}
+VALID_GATE_TAYLOR_REDUCTIONS = {"signed_damage", "sum_abs", "sum_square"}
+VALID_GATE_TAYLOR_LOCATIONS = {"fc1_out"}
 
 
 class MLPActivationTaylorCollector:
@@ -77,6 +79,105 @@ class MLPActivationTaylorCollector:
             handle.remove()
         self._handles.clear()
         self._pending_activations.clear()
+
+
+class MLPGateTaylorCollector:
+    """Collect Taylor scores from explicit channel gates in ViT MLPs.
+
+    The default fc1_out gate is inserted immediately after fc1 and before GELU,
+    matching the structural MLP hidden channel removed by fc1.out_features
+    pruning. Scores are still keyed by fc1 so the existing pruning importance can
+    rank the same root modules used for activation Taylor.
+    """
+
+    def __init__(
+        self,
+        model,
+        target_block_indices=None,
+        reduction="sum_abs",
+        gate_location="fc1_out",
+    ):
+        if reduction not in VALID_GATE_TAYLOR_REDUCTIONS:
+            raise ValueError(
+                "gate_taylor reduction must be one of "
+                f"{sorted(VALID_GATE_TAYLOR_REDUCTIONS)}, got {reduction!r}."
+            )
+        if gate_location not in VALID_GATE_TAYLOR_LOCATIONS:
+            raise ValueError(
+                "gate_taylor_location must be one of "
+                f"{sorted(VALID_GATE_TAYLOR_LOCATIONS)}, got {gate_location!r}."
+            )
+        if not hasattr(model.encoder, "blocks"):
+            raise ValueError("Gate Taylor pruning needs model.encoder.blocks.")
+
+        self.reduction = reduction
+        self.gate_location = gate_location
+        self.scores = {}
+        self.gates = {}
+        self._pending_gated_outputs = []
+        self._handles = []
+        selected_block_indices = _normalize_target_block_indices(
+            target_block_indices,
+            num_blocks=len(model.encoder.blocks),
+        )
+
+        for block_idx, block in enumerate(model.encoder.blocks):
+            if selected_block_indices is not None and block_idx not in selected_block_indices:
+                continue
+            fc1 = block.mlp.fc1
+            self.scores[fc1] = torch.zeros(fc1.out_features, device=fc1.weight.device)
+            if gate_location == "fc1_out":
+                self._register_fc1_out_gate(fc1)
+
+    def _register_fc1_out_gate(self, fc1):
+        gate = torch.ones(fc1.out_features, device=fc1.weight.device, requires_grad=True)
+        self.gates[fc1] = gate
+        self._handles.append(fc1.register_forward_hook(self._make_fc1_out_hook(gate)))
+
+    def _make_fc1_out_hook(self, gate):
+        def hook(_module, _inputs, output):
+            view_shape = [1] * output.ndim
+            view_shape[-1] = -1
+            gated_output = output * gate.view(*view_shape)
+            if gated_output.requires_grad:
+                gated_output.retain_grad()
+                self._pending_gated_outputs.append((_module, gated_output))
+            return gated_output
+
+        return hook
+
+    def accumulate_batch(self):
+        for fc1, gated_output in self._pending_gated_outputs:
+            if gated_output.grad is None:
+                continue
+            # Channel is the last dim for ViT token tensors: [B, tokens, hidden].
+            contribution = gated_output * gated_output.grad
+            if self.reduction == "signed_damage":
+                # Removing a gate changes it by delta_g=-1, so predicted loss
+                # change is -sum(gated_output * dL/dgated_output).
+                channel_score = -contribution.reshape(-1, contribution.shape[-1]).sum(dim=0)
+            elif self.reduction == "sum_abs":
+                channel_score = contribution.abs().reshape(-1, contribution.shape[-1]).sum(dim=0)
+            elif self.reduction == "sum_square":
+                channel_score = contribution.square().reshape(-1, contribution.shape[-1]).sum(dim=0)
+            else:
+                raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
+            self.scores[fc1] = self.scores[fc1] + channel_score.detach()
+        self._pending_gated_outputs.clear()
+        for gate in self.gates.values():
+            gate.grad = None
+
+    def final_scores(self):
+        return self.scores
+
+    def remove(self):
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+        self._pending_gated_outputs.clear()
+        for gate in self.gates.values():
+            gate.grad = None
+        self.gates.clear()
 
 
 class MLPActivationTaylorImportance(tp.importance.MagnitudeImportance):

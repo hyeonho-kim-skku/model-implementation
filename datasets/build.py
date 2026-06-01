@@ -148,7 +148,18 @@ def get_transform(dataset_name, mode):
         ]
         return transforms.Compose(augmentations + normalize)
 
-def get_loader(dataset_name, batch_size, mode, train, shuffle, drop_last, num_workers=4, data_root='./data'):
+def get_loader(
+    dataset_name,
+    batch_size,
+    mode,
+    train,
+    shuffle,
+    drop_last,
+    num_workers=4,
+    data_root='./data',
+    generator=None,
+    worker_init_fn=None,
+):
     # Transform 생성
     transform = get_transform(dataset_name, mode)
 
@@ -170,6 +181,14 @@ def get_loader(dataset_name, batch_size, mode, train, shuffle, drop_last, num_wo
         dataset = dataset_class(root=data_root, train=train, download=True, transform=transform)
 
     # DataLoader 생성
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, drop_last=drop_last)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        drop_last=drop_last,
+        generator=generator,
+        worker_init_fn=worker_init_fn,
+    )
 
     return dataloader
