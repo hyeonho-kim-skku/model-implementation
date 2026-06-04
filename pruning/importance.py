@@ -8,7 +8,7 @@ import torch_pruning as tp
 
 VALID_ACTIVATION_TAYLOR_REDUCTIONS = {"sum_abs", "abs_sum"}
 VALID_GATE_TAYLOR_REDUCTIONS = {"signed_damage", "sum_abs", "sum_square"}
-VALID_GATE_TAYLOR_LOCATIONS = {"fc1_out"}
+VALID_GATE_TAYLOR_LOCATIONS = {"fc1_out", "fc2_in"}
 
 
 class MLPActivationTaylorCollector:
@@ -82,12 +82,14 @@ class MLPActivationTaylorCollector:
 
 
 class MLPGateTaylorCollector:
-    """Collect Taylor scores from explicit channel gates in ViT MLPs.
+    """Collect Taylor scores from explicit element-wise gates in ViT MLPs.
 
-    The default fc1_out gate is inserted immediately after fc1 and before GELU,
-    matching the structural MLP hidden channel removed by fc1.out_features
-    pruning. Scores are still keyed by fc1 so the existing pruning importance can
-    rank the same root modules used for activation Taylor.
+    Gates can be inserted immediately after fc1 and before GELU (fc1_out), or
+    on the activation entering fc2 after GELU/dropout/norm (fc2_in). A fresh
+    output-shaped gate is created for each forward pass, so every
+    image/token/channel activation has its own deletion Taylor contribution.
+    Scores are aggregated by hidden channel and keyed by fc1 so the existing
+    pruning importance can rank the structural fc1.out_features roots.
     """
 
     def __init__(
@@ -112,9 +114,9 @@ class MLPGateTaylorCollector:
 
         self.reduction = reduction
         self.gate_location = gate_location
+        self.score_mode = "elementwise_gate_grad"
         self.scores = {}
-        self.gates = {}
-        self._pending_gated_outputs = []
+        self._pending_gates = []
         self._handles = []
         selected_block_indices = _normalize_target_block_indices(
             target_block_indices,
@@ -125,36 +127,49 @@ class MLPGateTaylorCollector:
             if selected_block_indices is not None and block_idx not in selected_block_indices:
                 continue
             fc1 = block.mlp.fc1
+            fc2 = block.mlp.fc2
             self.scores[fc1] = torch.zeros(fc1.out_features, device=fc1.weight.device)
             if gate_location == "fc1_out":
                 self._register_fc1_out_gate(fc1)
+            elif gate_location == "fc2_in":
+                self._register_fc2_in_gate(fc1, fc2)
 
     def _register_fc1_out_gate(self, fc1):
-        gate = torch.ones(fc1.out_features, device=fc1.weight.device, requires_grad=True)
-        self.gates[fc1] = gate
-        self._handles.append(fc1.register_forward_hook(self._make_fc1_out_hook(gate)))
+        self._handles.append(fc1.register_forward_hook(self._make_fc1_out_hook()))
 
-    def _make_fc1_out_hook(self, gate):
+    def _make_fc1_out_hook(self):
         def hook(_module, _inputs, output):
-            view_shape = [1] * output.ndim
-            view_shape[-1] = -1
-            gated_output = output * gate.view(*view_shape)
+            gate = torch.ones_like(output, requires_grad=True)
+            gated_output = output * gate
             if gated_output.requires_grad:
-                gated_output.retain_grad()
-                self._pending_gated_outputs.append((_module, gated_output))
+                self._pending_gates.append((_module, gate))
             return gated_output
 
         return hook
 
+    def _register_fc2_in_gate(self, fc1, fc2):
+        self._handles.append(fc2.register_forward_pre_hook(self._make_fc2_in_hook(fc1)))
+
+    def _make_fc2_in_hook(self, fc1):
+        def hook(_module, inputs):
+            activation = inputs[0]
+            gate = torch.ones_like(activation, requires_grad=True)
+            gated_activation = activation * gate
+            if gated_activation.requires_grad:
+                self._pending_gates.append((fc1, gate))
+            return (gated_activation, *inputs[1:])
+
+        return hook
+
     def accumulate_batch(self):
-        for fc1, gated_output in self._pending_gated_outputs:
-            if gated_output.grad is None:
+        for fc1, gate in self._pending_gates:
+            if gate.grad is None:
                 continue
             # Channel is the last dim for ViT token tensors: [B, tokens, hidden].
-            contribution = gated_output * gated_output.grad
+            contribution = gate * gate.grad
             if self.reduction == "signed_damage":
                 # Removing a gate changes it by delta_g=-1, so predicted loss
-                # change is -sum(gated_output * dL/dgated_output).
+                # change is -sum(gate * dL/dgate).
                 channel_score = -contribution.reshape(-1, contribution.shape[-1]).sum(dim=0)
             elif self.reduction == "sum_abs":
                 channel_score = contribution.abs().reshape(-1, contribution.shape[-1]).sum(dim=0)
@@ -163,9 +178,8 @@ class MLPGateTaylorCollector:
             else:
                 raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
             self.scores[fc1] = self.scores[fc1] + channel_score.detach()
-        self._pending_gated_outputs.clear()
-        for gate in self.gates.values():
             gate.grad = None
+        self._pending_gates.clear()
 
     def final_scores(self):
         return self.scores
@@ -174,10 +188,9 @@ class MLPGateTaylorCollector:
         for handle in self._handles:
             handle.remove()
         self._handles.clear()
-        self._pending_gated_outputs.clear()
-        for gate in self.gates.values():
+        for _fc1, gate in self._pending_gates:
             gate.grad = None
-        self.gates.clear()
+        self._pending_gates.clear()
 
 
 class MLPActivationTaylorImportance(tp.importance.MagnitudeImportance):

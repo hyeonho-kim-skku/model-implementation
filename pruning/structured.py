@@ -390,6 +390,7 @@ def compute_taylor_gradients(
     if gate_taylor_collector is not None:
         calibration_config["gate_taylor_reduction"] = gate_taylor_collector.reduction
         calibration_config["gate_taylor_location"] = gate_taylor_collector.gate_location
+        calibration_config["gate_taylor_score_mode"] = gate_taylor_collector.score_mode
     return calibration_config
 
 
