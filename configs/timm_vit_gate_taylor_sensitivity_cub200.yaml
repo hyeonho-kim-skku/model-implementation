@@ -6,15 +6,15 @@ split: test
 num_workers: 4
 max_batches:
 data_root: ./data
-results_path: ./pruned/vit_base_cub200_lora50_gate_taylor_fc1_out_signed_damage_full_sensitivity/results.jsonl
-artifact_dir: ./pruned/vit_base_cub200_lora50_gate_taylor_fc1_out_signed_damage_full_sensitivity/artifacts
+results_path: ./pruned/vit_base_cub200_lora50_gate_taylor_fc2_in_sum_abs_full_sensitivity/results.jsonl
+artifact_dir: ./pruned/vit_base_cub200_lora50_gate_taylor_fc2_in_sum_abs_full_sensitivity/artifacts
 save_artifacts: false
 ratios: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 target_layers:
 pruning_modules: mlp
 importance: gate_taylor
-gate_taylor_location: fc1_out
-gate_taylor_reduction: signed_damage
+gate_taylor_location: fc2_in
+gate_taylor_reduction: sum_abs
 global_pruning: false
 round_to:
 calibration_dataset: cub200
