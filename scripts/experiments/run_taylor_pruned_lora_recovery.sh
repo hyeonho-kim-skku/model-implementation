@@ -8,6 +8,7 @@ set -euo pipefail
 GPU_ID="${GPU_ID:-7}"
 EPOCHS="${EPOCHS:-20}"
 MLP_TAG="${MLP_TAG:-mlp030}"
+ARTIFACT_TEMPLATE="${ARTIFACT_TEMPLATE:-}"
 DATASETS="${DATASETS:-cifar100,cub200,fgvc_aircraft,stanford_cars}"
 TIMEZONE="${TIMEZONE:-Asia/Seoul}"
 LOG_DIR="${LOG_DIR:-logs/taylor_pruned_lora_recovery_${MLP_TAG}_$(TZ="$TIMEZONE" date +%Y%m%d_%H%M%S)}"
@@ -26,11 +27,17 @@ run_experiment() {
   local config_path="$2"
   local dataset="$3"
   local artifact_path="./pruned/vit_base_${dataset}_lora50_${MLP_TAG}_taylor/pruned_timm_classifier.pth"
+  if [ -n "$ARTIFACT_TEMPLATE" ]; then
+    artifact_path="${ARTIFACT_TEMPLATE//\{dataset\}/$dataset}"
+  fi
   local log_path="${LOG_DIR}/${name}.log"
 
   echo "[$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')] Starting ${name}"
   echo "Config: ${config_path}"
   echo "Artifact: ${artifact_path}"
+  if [ -n "$ARTIFACT_TEMPLATE" ]; then
+    echo "Artifact template: ${ARTIFACT_TEMPLATE}"
+  fi
   echo "Epochs: ${EPOCHS}"
   echo "Log: ${log_path}"
 

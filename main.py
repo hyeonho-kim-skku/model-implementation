@@ -1,4 +1,5 @@
 import datetime
+import sys
 import yaml
 from datasets import get_loader
 from models import load_model
@@ -7,14 +8,14 @@ from trainer import Trainer
 import argparse
 from torch.utils.tensorboard import SummaryWriter
 import torch
-from utils import load_optimizer, load_scheduler
+from utils import load_optimizer, load_scheduler, save_run_metadata
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def _main(args):
     model = load_model(**vars(args))
     model.to(device)
-    
+
     # trainloader, testloader = load_dataset(args.dataset, args.batch_size)
     trainloader = get_loader(args.dataset, args.batch_size, args.mode, train=True, shuffle=True, drop_last=True)
     testloader = get_loader(args.dataset, args.batch_size, 'test', train=False, shuffle=False, drop_last=False)
@@ -33,7 +34,11 @@ def _main(args):
 
     exp_name = f"{args.model}_{args.dataset}_{args.method}"
     log_dir = f'./runs/{exp_name}/{cur_time}'
-    
+
+    command = " ".join(sys.argv)
+    args.command = command
+    save_run_metadata(log_dir, args, command=command)
+
     writer = SummaryWriter(log_dir)
     trainer = Trainer(
         args=args,

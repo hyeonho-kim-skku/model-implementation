@@ -1,7 +1,20 @@
-# ntxent.py
+import json
+import os
+
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingLR, LinearLR, SequentialLR
+
+
+def save_run_metadata(log_dir, args, command=None):
+    """Save reproducibility metadata next to TensorBoard logs/checkpoints."""
+
+    os.makedirs(log_dir, exist_ok=True)
+    if command is not None:
+        with open(os.path.join(log_dir, "command.txt"), "w") as file:
+            file.write(command + "\n")
+    with open(os.path.join(log_dir, "args.json"), "w") as file:
+        json.dump(vars(args), file, indent=2, default=str)
 
 def load_optimizer(
     optimizer_name,
