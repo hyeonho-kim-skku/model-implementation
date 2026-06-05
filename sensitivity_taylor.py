@@ -27,6 +27,7 @@ import yaml
 
 from datasets import get_loader
 from engine import evaluate_classifier
+from pruning.gate_taylor_cache import capture_mlp_taylor_scores, restore_mlp_taylor_scores
 from pruning.importance import MLPActivationTaylorCollector, MLPGateTaylorCollector
 from pruning.source import build_pruning_source
 from pruning.structured import compute_taylor_gradients, prune_model
@@ -142,28 +143,6 @@ def capture_gradients(model):
         name: parameter.grad.detach().cpu().clone()
         for name, parameter in model.named_parameters()
         if parameter.grad is not None
-    }
-
-
-def capture_mlp_taylor_scores(model, scores):
-    """Snapshot fc1-keyed MLP scores by block index so deepcopy trials can reuse them."""
-
-    snapshot = {}
-    for block_idx, block in enumerate(model.encoder.blocks):
-        score = scores.get(block.mlp.fc1)
-        if score is not None:
-            snapshot[block_idx] = score.detach().cpu().clone()
-    return snapshot
-
-
-def restore_mlp_taylor_scores(model, snapshot):
-    """Map block-index MLP scores onto the copied trial model's fc1 modules."""
-
-    return {
-        model.encoder.blocks[block_idx].mlp.fc1: score.to(
-            model.encoder.blocks[block_idx].mlp.fc1.weight.device
-        ).clone()
-        for block_idx, score in snapshot.items()
     }
 
 
