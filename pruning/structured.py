@@ -16,6 +16,7 @@ from pruning.importance import (
     MLPActivationTaylorImportance,
     MLPGateTaylorCollector,
     VALID_ACTIVATION_TAYLOR_REDUCTIONS,
+    VALID_GATE_TAYLOR_AGGREGATIONS,
     VALID_GATE_TAYLOR_REDUCTIONS,
     VALID_GATE_TAYLOR_LOCATIONS,
 )
@@ -390,6 +391,7 @@ def compute_taylor_gradients(
     if gate_taylor_collector is not None:
         calibration_config["gate_taylor_reduction"] = gate_taylor_collector.reduction
         calibration_config["gate_taylor_location"] = gate_taylor_collector.gate_location
+        calibration_config["gate_taylor_aggregation"] = gate_taylor_collector.aggregation
         calibration_config["gate_taylor_score_mode"] = gate_taylor_collector.score_mode
     return calibration_config
 
@@ -617,6 +619,7 @@ def _build_pruning_artifact(
     activation_taylor_reduction,
     gate_taylor_reduction,
     gate_taylor_location,
+    gate_taylor_aggregation,
     base_macs,
     base_params,
     pruned_macs,
@@ -647,6 +650,7 @@ def _build_pruning_artifact(
             "activation_taylor_reduction": activation_taylor_reduction,
             "gate_taylor_reduction": gate_taylor_reduction,
             "gate_taylor_location": gate_taylor_location,
+            "gate_taylor_aggregation": gate_taylor_aggregation,
             "calibration": calibration_config,
         },
         "pruning_stats": {
@@ -683,6 +687,7 @@ def prune_model(
     activation_taylor_reduction="sum_abs",
     gate_taylor_reduction="sum_abs",
     gate_taylor_location="fc1_out",
+    gate_taylor_aggregation="elementwise",
     num_workers=4,
     data_root="./data",
     inspect_groups=False,
@@ -767,6 +772,12 @@ def prune_model(
                 "gate_taylor_location must be one of "
                 f"{sorted(VALID_GATE_TAYLOR_LOCATIONS)}, got {gate_taylor_location!r}."
             )
+        if gate_taylor_aggregation not in VALID_GATE_TAYLOR_AGGREGATIONS:
+            raise ValueError(
+                "gate_taylor_aggregation must be one of "
+                f"{sorted(VALID_GATE_TAYLOR_AGGREGATIONS)}, "
+                f"got {gate_taylor_aggregation!r}."
+            )
         if normalized_modules != ("mlp",):
             raise ValueError("gate_taylor currently supports pruning_modules='mlp' only.")
         gate_taylor_scores = (
@@ -830,6 +841,7 @@ def prune_model(
                         target_block_indices=normalized_target_block_indices,
                         reduction=gate_taylor_reduction,
                         gate_location=gate_taylor_location,
+                        aggregation=gate_taylor_aggregation,
                     )
                 try:
                     calibration_config = compute_taylor_gradients(
@@ -907,6 +919,9 @@ def prune_model(
         ),
         gate_taylor_reduction=gate_taylor_reduction if importance_type == "gate_taylor" else None,
         gate_taylor_location=gate_taylor_location if importance_type == "gate_taylor" else None,
+        gate_taylor_aggregation=(
+            gate_taylor_aggregation if importance_type == "gate_taylor" else None
+        ),
         base_macs=base_macs,
         base_params=base_params,
         pruned_macs=pruned_macs,

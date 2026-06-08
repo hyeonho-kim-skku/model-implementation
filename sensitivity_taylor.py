@@ -108,6 +108,7 @@ def build_parser():
     parser.add_argument("--activation-taylor-reduction", dest="activation_taylor_reduction", type=str, choices=["sum_abs", "abs_sum"], default="sum_abs", help="Reduction for activation_taylor scores")
     parser.add_argument("--gate-taylor-reduction", dest="gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for gate_taylor scores")
     parser.add_argument("--gate-taylor-location", dest="gate_taylor_location", type=str, default="fc1_out", help="Gate insertion point for gate_taylor")
+    parser.add_argument("--gate-taylor-aggregation", dest="gate_taylor_aggregation", type=str, choices=["elementwise", "samplewise"], default="elementwise", help="Aggregation unit for gate_taylor scores")
     return parser
 
 
@@ -199,6 +200,9 @@ def reset_results(path, args, trials, layers, calibration_config, baseline_metri
             "gate_taylor_location": (
                 args.gate_taylor_location if args.importance == "gate_taylor" else None
             ),
+            "gate_taylor_aggregation": (
+                args.gate_taylor_aggregation if args.importance == "gate_taylor" else None
+            ),
             "trials": trials,
             "target_layers": layers,
             "calibration": calibration_config,
@@ -232,6 +236,9 @@ def make_result_row(source, args, layer_idx, trial, metrics, artifact=None, path
         ),
         "gate_taylor_location": (
             args.gate_taylor_location if args.importance == "gate_taylor" else None
+        ),
+        "gate_taylor_aggregation": (
+            args.gate_taylor_aggregation if args.importance == "gate_taylor" else None
         ),
     }
     pruning_stats = {
@@ -369,6 +376,7 @@ def run_pruned_trial(
         activation_taylor_reduction=args.activation_taylor_reduction,
         gate_taylor_reduction=args.gate_taylor_reduction,
         gate_taylor_location=args.gate_taylor_location,
+        gate_taylor_aggregation=args.gate_taylor_aggregation,
         inspect_groups=args.inspect_groups,
         use_existing_taylor_gradients=True,
         existing_calibration_config=args.calibration_config,
@@ -433,6 +441,7 @@ def main(args):
                 target_block_indices=layers,
                 reduction=args.gate_taylor_reduction,
                 gate_location=args.gate_taylor_location,
+                aggregation=args.gate_taylor_aggregation,
             )
     try:
         args.calibration_config = compute_taylor_gradients(

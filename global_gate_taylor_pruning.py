@@ -71,6 +71,12 @@ def build_parser():
         choices=["signed_damage", "sum_abs", "sum_square"],
         default="sum_square",
     )
+    add(
+        "--gate-taylor-aggregation",
+        dest="gate_taylor_aggregation",
+        choices=["elementwise", "samplewise"],
+        default="elementwise",
+    )
     add("--calibration-dataset", dest="calibration_dataset", type=str, default=None)
     add("--calibration-batch-size", dest="calibration_batch_size", type=int, default=64)
     add("--calibration-batches", dest="calibration_batches", default=None)
@@ -114,15 +120,20 @@ def normalize_args(args):
         )
 
     dataset = str(args.dataset).replace("-", "_")
+    aggregation_suffix = (
+        "" if args.gate_taylor_aggregation == "elementwise" else f"_{args.gate_taylor_aggregation}"
+    )
     args.experiment_prefix = (
         f"vit_base_{dataset}_lora50_gate_taylor_"
         f"{args.gate_taylor_location}_{args.gate_taylor_reduction}"
+        f"{aggregation_suffix}"
     )
     if len(args.ratios) == 1:
         args.results_path, args.artifact_dir = output_paths_for_ratio(args, args.ratios[0])
     args.score_cache_path = args.score_cache_path or (
         f"./pruned/cache/vit_base_{dataset}_lora50_gate_taylor_"
-        f"{args.gate_taylor_location}_{args.gate_taylor_reduction}_full_scores.pth"
+        f"{args.gate_taylor_location}_{args.gate_taylor_reduction}"
+        f"{aggregation_suffix}_full_scores.pth"
     )
     return args
 
@@ -149,6 +160,7 @@ def cache_metadata(args, source, calibration_config, scores):
         "importance": "gate_taylor",
         "gate_taylor_location": args.gate_taylor_location,
         "gate_taylor_reduction": args.gate_taylor_reduction,
+        "gate_taylor_aggregation": args.gate_taylor_aggregation,
         "gate_taylor_score_mode": "elementwise_gate_grad",
         "calibration_split": args.calibration_split,
         "calibration_batches": args.calibration_batches if args.calibration_batches is not None else "full",
@@ -169,6 +181,7 @@ def validate_cache(args, source, scores, metadata):
         checkpoint_path=args.checkpoint_path,
         gate_taylor_location=args.gate_taylor_location,
         gate_taylor_reduction=args.gate_taylor_reduction,
+        gate_taylor_aggregation=args.gate_taylor_aggregation,
         calibration_split=args.calibration_split,
         calibration_batches=args.calibration_batches,
         calibration_seed=args.calibration_seed,
@@ -189,6 +202,7 @@ def get_gate_taylor_scores(args, source):
         model=source.model,
         reduction=args.gate_taylor_reduction,
         gate_location=args.gate_taylor_location,
+        aggregation=args.gate_taylor_aggregation,
     )
     try:
         calibration_config = compute_taylor_gradients(
@@ -256,6 +270,7 @@ def run_pruning_trial(args, source, base_model, scores, cache_info, ratio, eval_
         round_to=args.round_to,
         gate_taylor_reduction=args.gate_taylor_reduction,
         gate_taylor_location=args.gate_taylor_location,
+        gate_taylor_aggregation=args.gate_taylor_aggregation,
         inspect_groups=args.inspect_groups,
         use_existing_taylor_gradients=True,
         existing_calibration_config=calibration,
@@ -292,6 +307,7 @@ def metadata_row(args, baseline_metrics, cache_info, cache_loaded, ratio):
             "global_pruning": True,
             "gate_taylor_location": args.gate_taylor_location,
             "gate_taylor_reduction": args.gate_taylor_reduction,
+            "gate_taylor_aggregation": args.gate_taylor_aggregation,
             "score_cache_path": args.score_cache_path,
             "score_cache_loaded": cache_loaded,
             "calibration": cache_info.get("calibration_config", {}),

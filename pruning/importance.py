@@ -9,6 +9,7 @@ import torch_pruning as tp
 VALID_ACTIVATION_TAYLOR_REDUCTIONS = {"sum_abs", "abs_sum"}
 VALID_GATE_TAYLOR_REDUCTIONS = {"signed_damage", "sum_abs", "sum_square"}
 VALID_GATE_TAYLOR_LOCATIONS = {"fc1_out", "fc2_in"}
+VALID_GATE_TAYLOR_AGGREGATIONS = {"elementwise", "samplewise"}
 
 
 class MLPActivationTaylorCollector:
@@ -98,6 +99,7 @@ class MLPGateTaylorCollector:
         target_block_indices=None,
         reduction="sum_abs",
         gate_location="fc1_out",
+        aggregation="elementwise",
     ):
         if reduction not in VALID_GATE_TAYLOR_REDUCTIONS:
             raise ValueError(
@@ -109,11 +111,17 @@ class MLPGateTaylorCollector:
                 "gate_taylor_location must be one of "
                 f"{sorted(VALID_GATE_TAYLOR_LOCATIONS)}, got {gate_location!r}."
             )
+        if aggregation not in VALID_GATE_TAYLOR_AGGREGATIONS:
+            raise ValueError(
+                "gate_taylor_aggregation must be one of "
+                f"{sorted(VALID_GATE_TAYLOR_AGGREGATIONS)}, got {aggregation!r}."
+            )
         if not hasattr(model.encoder, "blocks"):
             raise ValueError("Gate Taylor pruning needs model.encoder.blocks.")
 
         self.reduction = reduction
         self.gate_location = gate_location
+        self.aggregation = aggregation
         self.score_mode = "elementwise_gate_grad"
         self.scores = {}
         self._pending_gates = []
@@ -167,19 +175,40 @@ class MLPGateTaylorCollector:
                 continue
             # Channel is the last dim for ViT token tensors: [B, tokens, hidden].
             contribution = gate * gate.grad
-            if self.reduction == "signed_damage":
-                # Removing a gate changes it by delta_g=-1, so predicted loss
-                # change is -sum(gate * dL/dgate).
-                channel_score = -contribution.reshape(-1, contribution.shape[-1]).sum(dim=0)
-            elif self.reduction == "sum_abs":
-                channel_score = contribution.abs().reshape(-1, contribution.shape[-1]).sum(dim=0)
-            elif self.reduction == "sum_square":
-                channel_score = contribution.square().reshape(-1, contribution.shape[-1]).sum(dim=0)
-            else:
-                raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
+            channel_score = self._reduce_contribution(contribution)
             self.scores[fc1] = self.scores[fc1] + channel_score.detach()
             gate.grad = None
         self._pending_gates.clear()
+
+    def _reduce_contribution(self, contribution):
+        if self.aggregation == "elementwise":
+            return self._reduce_elementwise(contribution)
+        if self.aggregation == "samplewise":
+            return self._reduce_samplewise(contribution)
+        raise ValueError(f"Unsupported gate_taylor aggregation: {self.aggregation!r}.")
+
+    def _reduce_elementwise(self, contribution):
+        if self.reduction == "signed_damage":
+            # Removing a gate changes it by delta_g=-1, so predicted loss
+            # change is -sum(gate * dL/dgate).
+            return -contribution.reshape(-1, contribution.shape[-1]).sum(dim=0)
+        if self.reduction == "sum_abs":
+            return contribution.abs().reshape(-1, contribution.shape[-1]).sum(dim=0)
+        if self.reduction == "sum_square":
+            return contribution.square().reshape(-1, contribution.shape[-1]).sum(dim=0)
+        raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
+
+    def _reduce_samplewise(self, contribution):
+        # First aggregate signed token contributions within each sample, then
+        # aggregate sample-level magnitudes into one score per hidden channel.
+        per_sample = contribution.sum(dim=1)
+        if self.reduction == "signed_damage":
+            return -per_sample.sum(dim=0)
+        if self.reduction == "sum_abs":
+            return per_sample.abs().sum(dim=0)
+        if self.reduction == "sum_square":
+            return per_sample.square().sum(dim=0)
+        raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
 
     def final_scores(self):
         return self.scores

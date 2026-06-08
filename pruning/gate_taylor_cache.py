@@ -77,6 +77,7 @@ def validate_gate_taylor_score_cache(
     checkpoint_path,
     gate_taylor_location,
     gate_taylor_reduction,
+    gate_taylor_aggregation,
     calibration_split,
     calibration_batches,
     calibration_seed,
@@ -90,6 +91,7 @@ def validate_gate_taylor_score_cache(
         "importance": "gate_taylor",
         "gate_taylor_location": gate_taylor_location,
         "gate_taylor_reduction": gate_taylor_reduction,
+        "gate_taylor_aggregation": gate_taylor_aggregation,
         "gate_taylor_score_mode": "elementwise_gate_grad",
         "calibration_split": calibration_split,
         "calibration_batches": calibration_batches,
@@ -101,7 +103,7 @@ def validate_gate_taylor_score_cache(
     mismatches = {
         key: {"expected": value, "found": metadata.get(key)}
         for key, value in expected.items()
-        if metadata.get(key) != value
+        if metadata.get(key, "elementwise" if key == "gate_taylor_aggregation" else None) != value
     }
     if mismatches:
         raise ValueError(f"Gate Taylor score cache metadata mismatch: {mismatches}")

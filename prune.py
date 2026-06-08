@@ -37,6 +37,7 @@ def build_parser():
     parser.add_argument("--activation-taylor-reduction", dest="activation_taylor_reduction", type=str, choices=["sum_abs", "abs_sum"], default="sum_abs", help="Reduction for activation_taylor scores")
     parser.add_argument("--gate-taylor-reduction", dest="gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for gate_taylor scores")
     parser.add_argument("--gate-taylor-location", dest="gate_taylor_location", type=str, default="fc1_out", help="Gate insertion point for gate_taylor")
+    parser.add_argument("--gate-taylor-aggregation", dest="gate_taylor_aggregation", type=str, choices=["elementwise", "samplewise"], default="elementwise", help="Aggregation unit for gate_taylor scores")
     parser.add_argument("--pruning-ratio", dest="pruning_ratio", type=float, default=0.2, help="Structured pruning ratio")
     parser.add_argument("--pruning-modules", dest="pruning_modules", type=str, default=None, help="Comma-separated pruning targets: head,mlp")
     parser.add_argument("--target-block-indices", dest="target_block_indices", type=str, default=None, help="Optional comma-separated transformer block indices to prune")
@@ -78,6 +79,7 @@ def main(args):
         activation_taylor_reduction=args.activation_taylor_reduction,
         gate_taylor_reduction=args.gate_taylor_reduction,
         gate_taylor_location=args.gate_taylor_location,
+        gate_taylor_aggregation=args.gate_taylor_aggregation,
         num_workers=args.num_workers,
         data_root=args.data_root,
         inspect_groups=args.inspect_groups,
