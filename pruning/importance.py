@@ -9,7 +9,12 @@ import torch_pruning as tp
 VALID_ACTIVATION_TAYLOR_REDUCTIONS = {"sum_abs", "abs_sum"}
 VALID_GATE_TAYLOR_REDUCTIONS = {"signed_damage", "sum_abs", "sum_square"}
 VALID_GATE_TAYLOR_LOCATIONS = {"fc1_out", "fc2_in"}
-VALID_GATE_TAYLOR_AGGREGATIONS = {"elementwise", "samplewise", "channelwise"}
+VALID_GATE_TAYLOR_AGGREGATIONS = {
+    "elementwise",
+    "samplewise",
+    "channelwise",
+    "tokenwise",
+}
 
 
 class MLPActivationTaylorCollector:
@@ -125,6 +130,7 @@ class MLPGateTaylorCollector:
         self.score_mode = "elementwise_gate_grad"
         self.scores = {}
         self._channel_sums = {}
+        self._token_sums = {}
         self._pending_gates = []
         self._handles = []
         selected_block_indices = _normalize_target_block_indices(
@@ -194,6 +200,20 @@ class MLPGateTaylorCollector:
             )
             return
 
+        if self.aggregation == "tokenwise":
+            token_sum = contribution.sum(dim=0).detach()
+            current_sum = self._token_sums.get(fc1)
+            if current_sum is None:
+                self._token_sums[fc1] = torch.zeros_like(token_sum)
+                current_sum = self._token_sums[fc1]
+            if current_sum.shape != token_sum.shape:
+                raise ValueError(
+                    "Token-wise gate Taylor aggregation requires fixed token shapes; "
+                    f"expected {tuple(current_sum.shape)}, got {tuple(token_sum.shape)}."
+                )
+            self._token_sums[fc1] = current_sum + token_sum
+            return
+
         channel_score = self._reduce_contribution(contribution)
         self.scores[fc1] = self.scores[fc1] + channel_score.detach()
 
@@ -228,6 +248,11 @@ class MLPGateTaylorCollector:
         raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
 
     def _finalize_signed_sum(self, signed_sum):
+        """Finalize channelwise raw sums.
+
+        `signed_sum` has shape [hidden] and stores full-calibration signed
+        contributions for one shared channel gate per hidden unit.
+        """
         if self.reduction == "signed_damage":
             return -signed_sum
         if self.reduction == "sum_abs":
@@ -236,11 +261,30 @@ class MLPGateTaylorCollector:
             return signed_sum.square()
         raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
 
+    def _finalize_token_sum(self, token_sum):
+        """Finalize tokenwise raw sums.
+
+        `token_sum` has shape [tokens, hidden] and stores full-calibration
+        signed contributions for one token-position gate per hidden unit.
+        """
+        if self.reduction == "signed_damage":
+            return -token_sum.sum(dim=0)
+        if self.reduction == "sum_abs":
+            return token_sum.abs().sum(dim=0)
+        if self.reduction == "sum_square":
+            return token_sum.square().sum(dim=0)
+        raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
+
     def final_scores(self):
         if self.aggregation == "channelwise":
             return {
                 fc1: self._finalize_signed_sum(channel_sum)
                 for fc1, channel_sum in self._channel_sums.items()
+            }
+        if self.aggregation == "tokenwise":
+            return {
+                fc1: self._finalize_token_sum(token_sum)
+                for fc1, token_sum in self._token_sums.items()
             }
         return self.scores
 
