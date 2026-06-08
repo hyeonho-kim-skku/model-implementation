@@ -9,7 +9,7 @@ import torch_pruning as tp
 VALID_ACTIVATION_TAYLOR_REDUCTIONS = {"sum_abs", "abs_sum"}
 VALID_GATE_TAYLOR_REDUCTIONS = {"signed_damage", "sum_abs", "sum_square"}
 VALID_GATE_TAYLOR_LOCATIONS = {"fc1_out", "fc2_in"}
-VALID_GATE_TAYLOR_AGGREGATIONS = {"elementwise", "samplewise"}
+VALID_GATE_TAYLOR_AGGREGATIONS = {"elementwise", "samplewise", "channelwise"}
 
 
 class MLPActivationTaylorCollector:
@@ -124,6 +124,7 @@ class MLPGateTaylorCollector:
         self.aggregation = aggregation
         self.score_mode = "elementwise_gate_grad"
         self.scores = {}
+        self._channel_sums = {}
         self._pending_gates = []
         self._handles = []
         selected_block_indices = _normalize_target_block_indices(
@@ -137,6 +138,10 @@ class MLPGateTaylorCollector:
             fc1 = block.mlp.fc1
             fc2 = block.mlp.fc2
             self.scores[fc1] = torch.zeros(fc1.out_features, device=fc1.weight.device)
+            self._channel_sums[fc1] = torch.zeros(
+                fc1.out_features,
+                device=fc1.weight.device,
+            )
             if gate_location == "fc1_out":
                 self._register_fc1_out_gate(fc1)
             elif gate_location == "fc2_in":
@@ -175,10 +180,22 @@ class MLPGateTaylorCollector:
                 continue
             # Channel is the last dim for ViT token tensors: [B, tokens, hidden].
             contribution = gate * gate.grad
-            channel_score = self._reduce_contribution(contribution)
-            self.scores[fc1] = self.scores[fc1] + channel_score.detach()
+            self._accumulate_contribution(fc1, contribution)
             gate.grad = None
         self._pending_gates.clear()
+
+    def _accumulate_contribution(self, fc1, contribution):
+        if self.aggregation == "channelwise":
+            # Full-calibration channel gate: accumulate signed contributions
+            # first, then apply magnitude reduction once in final_scores().
+            self._channel_sums[fc1] = (
+                self._channel_sums[fc1]
+                + contribution.sum(dim=(0, 1)).detach()
+            )
+            return
+
+        channel_score = self._reduce_contribution(contribution)
+        self.scores[fc1] = self.scores[fc1] + channel_score.detach()
 
     def _reduce_contribution(self, contribution):
         if self.aggregation == "elementwise":
@@ -210,7 +227,21 @@ class MLPGateTaylorCollector:
             return per_sample.square().sum(dim=0)
         raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
 
+    def _finalize_signed_sum(self, signed_sum):
+        if self.reduction == "signed_damage":
+            return -signed_sum
+        if self.reduction == "sum_abs":
+            return signed_sum.abs()
+        if self.reduction == "sum_square":
+            return signed_sum.square()
+        raise ValueError(f"Unsupported gate_taylor reduction: {self.reduction!r}.")
+
     def final_scores(self):
+        if self.aggregation == "channelwise":
+            return {
+                fc1: self._finalize_signed_sum(channel_sum)
+                for fc1, channel_sum in self._channel_sums.items()
+            }
         return self.scores
 
     def remove(self):

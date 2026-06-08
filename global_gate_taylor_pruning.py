@@ -74,7 +74,7 @@ def build_parser():
     add(
         "--gate-taylor-aggregation",
         dest="gate_taylor_aggregation",
-        choices=["elementwise", "samplewise"],
+        choices=["elementwise", "samplewise", "channelwise"],
         default="elementwise",
     )
     add("--calibration-dataset", dest="calibration_dataset", type=str, default=None)
