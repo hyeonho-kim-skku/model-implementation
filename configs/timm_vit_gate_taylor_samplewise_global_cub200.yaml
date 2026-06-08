@@ -1,0 +1,26 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_cub200_supervised/0512-022506/best_cls_ckpt.pth
+
+dataset: cub200
+calibration_dataset: cub200
+batch_size: 64
+split: test
+num_workers: 4
+max_batches:
+data_root: ./data
+
+ratios: [0.4, 0.5, 0.6]
+pruning_modules: mlp
+round_to:
+inspect_groups: false
+
+gate_taylor_location: fc2_in
+gate_taylor_reduction: sum_square
+gate_taylor_aggregation: samplewise
+calibration_batch_size: 64
+calibration_batches: full
+calibration_split: train
+calibration_seed: 42
+
+score_cache_path: ./pruned/cache/vit_base_cub200_lora50_gate_taylor_fc2_in_sum_square_samplewise_full_scores.pth
+save_artifacts: true
