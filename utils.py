@@ -1,6 +1,8 @@
 import json
 import os
+import random
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingLR, LinearLR, SequentialLR
@@ -15,6 +17,37 @@ def save_run_metadata(log_dir, args, command=None):
             file.write(command + "\n")
     with open(os.path.join(log_dir, "args.json"), "w") as file:
         json.dump(vars(args), file, indent=2, default=str)
+
+
+def set_seed(seed):
+    """Seed Python, NumPy, and PyTorch RNGs for reproducible training runs."""
+
+    if seed is None:
+        return
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def seed_worker(_worker_id):
+    """Initialize DataLoader worker RNGs from PyTorch's worker seed."""
+
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+def build_seeded_generator(seed):
+    """Return a torch.Generator seeded for DataLoader shuffling, or None."""
+
+    if seed is None:
+        return None
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    return generator
+
 
 def load_optimizer(
     optimizer_name,

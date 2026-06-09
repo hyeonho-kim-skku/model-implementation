@@ -8,16 +8,36 @@ from trainer import Trainer
 import argparse
 from torch.utils.tensorboard import SummaryWriter
 import torch
-from utils import load_optimizer, load_scheduler, save_run_metadata
+from utils import (
+    build_seeded_generator,
+    load_optimizer,
+    load_scheduler,
+    save_run_metadata,
+    seed_worker,
+    set_seed,
+)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def _main(args):
+    set_seed(args.seed)
+
     model = load_model(**vars(args))
     model.to(device)
 
     # trainloader, testloader = load_dataset(args.dataset, args.batch_size)
-    trainloader = get_loader(args.dataset, args.batch_size, args.mode, train=True, shuffle=True, drop_last=True)
+    train_generator = build_seeded_generator(args.seed)
+    train_worker_init_fn = seed_worker if args.seed is not None else None
+    trainloader = get_loader(
+        args.dataset,
+        args.batch_size,
+        args.mode,
+        train=True,
+        shuffle=True,
+        drop_last=True,
+        generator=train_generator,
+        worker_init_fn=train_worker_init_fn,
+    )
     testloader = get_loader(args.dataset, args.batch_size, 'test', train=False, shuffle=False, drop_last=False)
     knn_trainloader = None
     if args.mode == 'two_crop' or args.mode == 'multi_crop':
@@ -90,6 +110,7 @@ if __name__ == "__main__":
     parser.add_argument('--freeze-encoder', dest='freeze_encoder', action=argparse.BooleanOptionalAction, default=False, help='Train only the classifier head for timm_classifier')
     parser.add_argument('--reset-classifier', dest='reset_classifier', action=argparse.BooleanOptionalAction, default=False, help='Replace the classifier head when loading a pruned artifact')
     parser.add_argument('--disable-progress', dest='disable_progress', action='store_true', help='Disable tqdm progress bars for cleaner batch logs')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for training reproducibility')
 
     args = parser.parse_args()
 
