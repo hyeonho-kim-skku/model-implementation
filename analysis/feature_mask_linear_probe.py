@@ -111,7 +111,13 @@ def load_scores_cache(path: str) -> tuple[torch.Tensor, dict]:
     payload = torch.load(path, map_location="cpu")
     if "scores" not in payload:
         raise ValueError(f"Scores cache does not contain a 'scores' tensor: {path}")
-    metadata = {key: value for key, value in payload.items() if key != "scores"}
+    # Score caches may include auxiliary tensors such as per-dim within/between
+    # values. Keep those in the .pt file, but omit them from JSONL metadata.
+    metadata = {
+        key: value
+        for key, value in payload.items()
+        if key != "scores" and not isinstance(value, torch.Tensor)
+    }
     return payload["scores"].float(), metadata
 
 
