@@ -8,8 +8,8 @@ This script is the next step after ``feature_intraclass_variance.py``:
 4. Compute task loss from ``classifier(Z * m)``.
 5. Use the Taylor signal of the mask, ``m * dL/dm``, as per-dimension
    feature importance.
-6. Later, mask low-importance dimensions and recompute macro intra-class
-   variance using the shared metric implementation.
+6. Mask low-importance dimensions and evaluate feature compactness plus
+   classifier behavior, optionally on a separate held-out feature cache.
 
 The important modeling choice is that the mask is applied to the final feature
 representation, matching the feature-space masking idea rather than physically
@@ -47,8 +47,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-path", dest="checkpoint_path", type=str, required=True)
     parser.add_argument("--features-cache", dest="features_cache", type=str, required=True)
+    parser.add_argument(
+        "--eval-features-cache",
+        dest="eval_features_cache",
+        type=str,
+        default=None,
+        help="Optional feature cache used only for mask evaluation. Scores are still computed from --features-cache.",
+    )
     parser.add_argument("--dataset", type=str, required=True)
     parser.add_argument("--split", type=str, default="train")
+    parser.add_argument(
+        "--eval-split",
+        dest="eval_split",
+        type=str,
+        default=None,
+        help="Split name for --eval-features-cache. Defaults to --split when no eval cache is provided.",
+    )
     parser.add_argument("--batch-size", dest="batch_size", type=int, default=256)
     parser.add_argument("--axis", choices=AXES, default="sample")
     parser.add_argument("--magnitude", choices=MAGNITUDES, default="square")
@@ -252,18 +266,23 @@ def evaluate_masked_classifier(
 
     total_loss = 0.0
     correct = 0
+    agreed = 0
     total = 0
     for batch_features, batch_labels in feature_loader:
         # batch_features: [B, D], batch_labels: [B]
         batch_features = batch_features.to(device)
         batch_labels = batch_labels.to(device)
 
+        baseline_logits = classifier(batch_features)  # [B, C]
         masked_features = batch_features * mask  # [B, D]
         logits = classifier(masked_features)  # [B, C]
         loss = F.cross_entropy(logits, batch_labels, reduction="sum")
 
+        baseline_predictions = baseline_logits.argmax(dim=1)  # [B]
+        masked_predictions = logits.argmax(dim=1)  # [B]
         total_loss += float(loss.item())
-        correct += int((logits.argmax(dim=1) == batch_labels).sum().item())
+        correct += int((masked_predictions == batch_labels).sum().item())
+        agreed += int((masked_predictions == baseline_predictions).sum().item())
         total += int(batch_labels.numel())
 
     if total == 0:
@@ -271,6 +290,7 @@ def evaluate_masked_classifier(
     return {
         "ce_loss": total_loss / total,
         "accuracy": 100.0 * correct / total,
+        "agreement": 100.0 * agreed / total,
     }
 
 
@@ -325,12 +345,22 @@ def append_jsonl(path: str, rows: list[dict]) -> None:
 
 def main(args: argparse.Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    features, labels, feature_metadata = load_feature_cache(args.features_cache)
+    score_features, score_labels, score_feature_metadata = load_feature_cache(args.features_cache)
+    eval_cache = args.eval_features_cache or args.features_cache
+    eval_split = args.eval_split or (args.split if args.eval_features_cache is None else "eval")
+    eval_features, eval_labels, eval_feature_metadata = load_feature_cache(eval_cache)
+
+    if score_features.shape[1] != eval_features.shape[1]:
+        raise ValueError(
+            "Score and eval feature dimensions must match: "
+            f"{score_features.shape[1]} != {eval_features.shape[1]}"
+        )
+
     classifier = load_classifier(args.checkpoint_path, device)
     scores = compute_mask_taylor_scores(
         classifier=classifier,
-        features=features,
-        labels=labels,
+        features=score_features,
+        labels=score_labels,
         batch_size=args.batch_size,
         axis=args.axis,
         magnitude=args.magnitude,
@@ -339,20 +369,25 @@ def main(args: argparse.Namespace) -> None:
 
     metadata = {
         "dataset": args.dataset,
-        "split": args.split,
+        "score_split": args.split,
+        "eval_split": eval_split,
         "checkpoint_path": args.checkpoint_path,
         "features_cache": args.features_cache,
+        "eval_features_cache": eval_cache,
         "axis": args.axis,
         "magnitude": args.magnitude,
         "batch_size": args.batch_size,
-        "num_samples": int(features.shape[0]),
-        "feature_dim": int(features.shape[1]),
+        "num_score_samples": int(score_features.shape[0]),
+        "num_eval_samples": int(eval_features.shape[0]),
+        "feature_dim": int(score_features.shape[1]),
         "score_min": float(scores.min().item()),
         "score_max": float(scores.max().item()),
         "score_mean": float(scores.float().mean().item()),
     }
-    if feature_metadata:
-        metadata["feature_metadata"] = feature_metadata
+    if score_feature_metadata:
+        metadata["feature_metadata"] = score_feature_metadata
+    if eval_feature_metadata:
+        metadata["eval_feature_metadata"] = eval_feature_metadata
 
     if args.output_scores:
         save_scores(args.output_scores, scores, metadata)
@@ -368,8 +403,8 @@ def main(args: argparse.Namespace) -> None:
             for ratio in ratios:
                 rows.append(
                     masked_evaluation_row(
-                        features=features,
-                        labels=labels,
+                        features=eval_features,
+                        labels=eval_labels,
                         scores=scores,
                         ratio=ratio,
                         policy=policy,
@@ -389,7 +424,8 @@ def main(args: argparse.Namespace) -> None:
             f"ratio={row['ratio']:.3f} masked={row['masked_dims']} kept={row['kept_dims']} "
             f"intra={row['intra_class_variance']:.6f} "
             f"norm_intra={row['normalized_intra_class_variance']:.6f} "
-            f"loss={row['ce_loss']:.6f} acc={row['accuracy']:.2f}"
+            f"loss={row['ce_loss']:.6f} acc={row['accuracy']:.2f} "
+            f"agree={row['agreement']:.2f}"
         )
 
     if args.output_jsonl:
