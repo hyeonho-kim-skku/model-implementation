@@ -20,7 +20,9 @@ The current hypothesis is:
 - LoRA recovery restores 50% and 60% pruned models close to dense baselines.
 - Global pruning concentrates heavily in late MLP blocks, especially blocks 9-10.
 - This allocation is broadly aligned with layer-wise sensitivity, but not perfectly. Block 11 often appears more tolerant than its global allocation suggests.
-- The next research question is whether constrained/rebalanced global pruning can reduce pruning-only collapse while preserving recovery performance.
+- Recent aggregation ablations show that the axis used to aggregate element-wise gate Taylor contributions matters. In short: `samplewise` helps moderate pruning, `tokenwise` is more useful on fine-grained datasets than CIFAR100, and `channelwise` is cancellation-prone.
+- Recovery follow-up shows aggregation effects mostly persist after LoRA recovery, but margins shrink. Pruning-only accuracy is useful but not a perfect proxy for recovered accuracy.
+- The next research question is to explain aggregation behavior through cancellation-ratio and mask-overlap analyses. Constrained/rebalanced global pruning remains a later candidate.
 
 ## Terms Used In This Log
 
@@ -195,11 +197,45 @@ Important figures:
 - `figures/gate_taylor_global_pruning/gate_taylor_global_layer_pruned_ratio_<dataset>.png`
 - `figures/gate_taylor_sensitivity/fc2_in_sum_square/<dataset>_fc2_in_sum_square_sensitivity_heatmap.png`
 
+## Step 6: Gate Taylor Aggregation Axis Ablation
+
+Question:
+
+> When gate Taylor contributions exist at sample-token-channel resolution, which axes should be summed before applying `sum_square`?
+
+Aggregation variants:
+
+- **Elementwise**: square each sample-token contribution, then sum over samples/tokens.
+- **Samplewise**: sum over tokens per sample, square, then sum over samples.
+- **Tokenwise**: sum over samples per token position, square, then sum over tokens.
+- **Channelwise**: sum over all samples/tokens, then square.
+
+Main observations:
+
+- `samplewise` improves pruning-only accuracy at 40/50% across datasets, but loses that advantage at 60%.
+- `tokenwise` is poor on CIFAR100 but tends to help fine-grained datasets.
+- `channelwise` is consistently weak, likely because too much signed cancellation happens before squaring.
+- Recovery follow-up (`samplewise50`, `tokenwise60`, seed 42) shows aggregation effects mostly persist but shrink after LoRA recovery.
+- Early layer-allocation analysis suggests tokenwise gains are not mainly from changing how much each layer is pruned; within-layer channel selection is likely important.
+
+Important files and exact numbers:
+
+- `figures/gate_taylor_aggregation_global/gate_taylor_aggregation_accuracy_delta_table.png`
+- `figures/gate_taylor_aggregation_global/gate_taylor_aggregation_accuracy_delta.csv`
+- `figures/gate_taylor_aggregation_global/gate_taylor_samplewise50_recovery_comparison_table.png`
+- `figures/gate_taylor_aggregation_global/gate_taylor_samplewise50_recovery_comparison.csv`
+- `figures/gate_taylor_aggregation_global/gate_taylor_tokenwise60_recovery_comparison_table.png`
+- `figures/gate_taylor_aggregation_global/gate_taylor_tokenwise60_recovery_comparison.csv`
+- `figures/gate_taylor_aggregation_global/gate_taylor_aggregation_layer_pruned_ratio_delta.png`
+- `analysis/plot_gate_taylor_aggregation_global.py`
+- `analysis/plot_gate_taylor_aggregation_layer_distribution.py`
+- `analysis/plot_gate_taylor_recovery_split_tables.py`
+
 ## Current Interpretation For Slides
 
 Main message:
 
-> Gate Taylor global pruning finds broadly sensitivity-aware MLP pruning allocations. However, high-ratio unconstrained pruning causes large pruning-only degradation, while LoRA recovery restores the pruned models close to dense baselines.
+> Gate Taylor global pruning finds broadly sensitivity-aware MLP pruning allocations. However, high-ratio unconstrained pruning causes large pruning-only degradation, while LoRA recovery restores the pruned models close to dense baselines. At the score level, aggregation granularity is not a minor implementation detail: it changes pruning-only accuracy and leaves smaller but visible effects after recovery.
 
 Supporting points:
 
@@ -208,6 +244,8 @@ Supporting points:
 - 60% pruning-only is too aggressive without recovery.
 - Recovery results show the pruned structures are still trainable/recoverable.
 - Layer allocation suggests the next step should test constraints or rebalancing rather than only increasing the global ratio.
+- Aggregation-axis ablation should be framed as the current main observation: aggregation granularity changes pruning-only behavior and leaves smaller effects after recovery.
+- Recovery follow-up is validation, not the main contribution.
 
 ## Reproducibility Notes
 
@@ -218,7 +256,12 @@ Supporting points:
 
 ## Next Experiment Candidates
 
-Primary next experiment:
+Primary next analyses:
+
+- Cancellation-ratio analysis for aggregation modes. Use exact score caches/results as source of truth; goal is to test whether channelwise and CIFAR100-tokenwise suffer from stronger signed cancellation.
+- Mask-overlap analysis between elementwise and samplewise/tokenwise masks. Goal is to check whether improvements come from different within-layer channel choices rather than coarse layer allocation.
+
+Later method candidate:
 
 - Constrained/rebalanced global pruning at 60%.
 - Candidate constraints:
