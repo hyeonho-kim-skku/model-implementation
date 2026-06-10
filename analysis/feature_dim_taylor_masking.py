@@ -34,7 +34,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from analysis.feature_intraclass_variance import load_feature_cache, macro_intra_class_variance
+from analysis.feature_intraclass_variance import (
+    load_feature_cache,
+    macro_fisher_discriminant_ratio,
+    macro_intra_class_variance,
+)
 from pruning.checkpoint import build_dense_model_from_checkpoint
 
 
@@ -80,6 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="0,1,2,3,4,5,6,7,8,9",
         help="Comma-separated seeds used only when mask policy includes random.",
+    )
+    parser.add_argument(
+        "--fdr-global-mean",
+        dest="fdr_global_mean",
+        type=str,
+        default="sample",
+        choices=["sample", "class"],
+        help="Global mean definition for FDR. Use sample to match the paper; class is a macro diagnostic.",
     )
     parser.add_argument("--output-scores", dest="output_scores", type=str, default=None)
     parser.add_argument("--output-jsonl", dest="output_jsonl", type=str, default=None)
@@ -305,11 +317,22 @@ def masked_evaluation_row(
     classifier: torch.nn.Module,
     batch_size: int,
     device: torch.device,
+    fdr_global_mean: str,
 ) -> dict:
     # features: [N, D], labels: [N], scores: [D]
     mask, masked_indices, kept_indices = build_feature_mask(scores, ratio, policy, seed)
     masked_features = features.float() * mask.view(1, -1)  # [N, D]
     normalized_masked_features = F.normalize(masked_features, dim=1)  # [N, D]
+    fdr_metrics = macro_fisher_discriminant_ratio(
+        masked_features,
+        labels,
+        global_mean=fdr_global_mean,
+    )
+    normalized_fdr_metrics = macro_fisher_discriminant_ratio(
+        normalized_masked_features,
+        labels,
+        global_mean=fdr_global_mean,
+    )
     classifier_metrics = evaluate_masked_classifier(
         classifier=classifier,
         features=features,
@@ -327,6 +350,10 @@ def masked_evaluation_row(
         "kept_dims": int(kept_indices.numel()),
         "intra_class_variance": macro_intra_class_variance(masked_features, labels),
         "normalized_intra_class_variance": macro_intra_class_variance(normalized_masked_features, labels),
+        **fdr_metrics,
+        "normalized_within_class_variance": normalized_fdr_metrics["within_class_variance"],
+        "normalized_between_class_variance": normalized_fdr_metrics["between_class_variance"],
+        "normalized_fisher_discriminant_ratio": normalized_fdr_metrics["fisher_discriminant_ratio"],
         **classifier_metrics,
     }
 
@@ -376,6 +403,7 @@ def main(args: argparse.Namespace) -> None:
         "eval_features_cache": eval_cache,
         "axis": args.axis,
         "magnitude": args.magnitude,
+        "fdr_global_mean": args.fdr_global_mean,
         "batch_size": args.batch_size,
         "num_score_samples": int(score_features.shape[0]),
         "num_eval_samples": int(eval_features.shape[0]),
@@ -413,6 +441,7 @@ def main(args: argparse.Namespace) -> None:
                         classifier=classifier,
                         batch_size=args.batch_size,
                         device=device,
+                        fdr_global_mean=args.fdr_global_mean,
                     )
                 )
 
@@ -424,6 +453,7 @@ def main(args: argparse.Namespace) -> None:
             f"ratio={row['ratio']:.3f} masked={row['masked_dims']} kept={row['kept_dims']} "
             f"intra={row['intra_class_variance']:.6f} "
             f"norm_intra={row['normalized_intra_class_variance']:.6f} "
+            f"norm_fdr={row['normalized_fisher_discriminant_ratio']:.6f} "
             f"loss={row['ce_loss']:.6f} acc={row['accuracy']:.2f} "
             f"agree={row['agreement']:.2f}"
         )

@@ -43,6 +43,7 @@ from analysis.feature_dim_taylor_masking import (  # noqa: E402
 )
 from analysis.feature_intraclass_variance import (  # noqa: E402
     load_feature_cache,
+    macro_fisher_discriminant_ratio,
     macro_intra_class_variance,
 )
 
@@ -78,6 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Optional torch device string. Defaults to cuda when available.",
+    )
+    parser.add_argument(
+        "--fdr-global-mean",
+        dest="fdr_global_mean",
+        type=str,
+        default="sample",
+        choices=["sample", "class"],
+        help="Global mean definition for FDR. Use sample to match the paper; class is a macro diagnostic.",
     )
     parser.add_argument("--output-jsonl", dest="output_jsonl", type=str, required=True)
     return parser
@@ -212,14 +221,30 @@ def evaluate_linear_head(
     }
 
 
-def feature_compactness_rows(features: torch.Tensor, labels: torch.Tensor) -> dict:
+def feature_compactness_rows(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    fdr_global_mean: str,
+) -> dict:
     """Compute raw and L2-normalized test feature compactness metrics."""
 
     # features: [N, D], labels: [N]
     normalized_features = F.normalize(features.float(), dim=1)  # [N, D]
+    fdr_metrics = macro_fisher_discriminant_ratio(features, labels, global_mean=fdr_global_mean)
+    normalized_fdr_metrics = macro_fisher_discriminant_ratio(
+        normalized_features,
+        labels,
+        global_mean=fdr_global_mean,
+    )
     return {
         "test_intra_class_variance": macro_intra_class_variance(features, labels),
         "test_normalized_intra_class_variance": macro_intra_class_variance(normalized_features, labels),
+        "test_within_class_variance": fdr_metrics["within_class_variance"],
+        "test_between_class_variance": fdr_metrics["between_class_variance"],
+        "test_fisher_discriminant_ratio": fdr_metrics["fisher_discriminant_ratio"],
+        "test_normalized_within_class_variance": normalized_fdr_metrics["within_class_variance"],
+        "test_normalized_between_class_variance": normalized_fdr_metrics["between_class_variance"],
+        "test_normalized_fisher_discriminant_ratio": normalized_fdr_metrics["fisher_discriminant_ratio"],
     }
 
 
@@ -261,7 +286,11 @@ def run_one_probe(
         batch_size=args.batch_size,
         device=device,
     )
-    compactness_metrics = feature_compactness_rows(masked_test_features, test_labels)
+    compactness_metrics = feature_compactness_rows(
+        masked_test_features,
+        test_labels,
+        fdr_global_mean=args.fdr_global_mean,
+    )
 
     return {
         **metadata,
@@ -320,6 +349,7 @@ def main(args: argparse.Namespace) -> None:
         "batch_size": int(args.batch_size),
         "lr": float(args.lr),
         "weight_decay": float(args.weight_decay),
+        "fdr_global_mean": args.fdr_global_mean,
         "run_seed": int(args.seed),
     }
     if train_metadata:
@@ -364,7 +394,8 @@ def main(args: argparse.Namespace) -> None:
                     f"train_loss={row['train_ce_loss']:.6f} "
                     f"test_loss={row['test_ce_loss']:.6f} "
                     f"test_acc={row['test_accuracy']:.2f} "
-                    f"test_norm_intra={row['test_normalized_intra_class_variance']:.6f}"
+                    f"test_norm_intra={row['test_normalized_intra_class_variance']:.6f} "
+                    f"test_norm_fdr={row['test_normalized_fisher_discriminant_ratio']:.6f}"
                 )
 
     write_jsonl(args.output_jsonl, rows)

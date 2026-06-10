@@ -62,6 +62,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional .pt path to save extracted CPU features and labels.",
     )
+    parser.add_argument(
+        "--fdr-global-mean",
+        dest="fdr_global_mean",
+        type=str,
+        default="sample",
+        choices=["sample", "class"],
+        help="Global mean definition for FDR. Use sample to match the paper; class is a macro diagnostic.",
+    )
     parser.add_argument("--output-json", dest="output_json", type=str, default=None)
     return parser
 
@@ -125,6 +133,64 @@ def macro_intra_class_variance(features: torch.Tensor, labels: torch.Tensor) -> 
         per_class_variances.append(squared_distances.mean())
 
     return float(torch.stack(per_class_variances).mean().item())
+
+
+def macro_fisher_discriminant_ratio(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    global_mean: str = "sample",
+    eps: float = 1e-12,
+) -> dict[str, float]:
+    """Return supplement-style macro FDR from cached features.
+
+    ``global_mean="sample"`` follows the paper-style definition where the
+    global center is the mean over all samples. ``global_mean="class"`` is kept
+    only as an explicit class-balanced diagnostic.
+    """
+
+    # features: [N, D], labels: [N]
+    if global_mean not in {"sample", "class"}:
+        raise ValueError(f"Unsupported FDR global mean: {global_mean}")
+
+    features = features.float()
+    labels = labels.long()
+    classes = torch.unique(labels)
+    if classes.numel() == 0:
+        raise ValueError("Cannot compute FDR without labels.")
+
+    class_means = []
+    within_terms = []
+    for cls in classes:
+        # class_features: [N_c, D]
+        class_features = features[labels == cls]
+        # class_mean: [D]
+        class_mean = class_features.mean(dim=0)
+        # squared_distances: [N_c]
+        squared_distances = ((class_features - class_mean) ** 2).sum(dim=1)
+        class_means.append(class_mean)
+        within_terms.append(squared_distances.mean())
+
+    # class_means: [C, D]
+    class_means = torch.stack(class_means, dim=0)
+    within = torch.stack(within_terms).mean()
+
+    if global_mean == "sample":
+        # global_center: [D]. This is the paper-style sample mean.
+        global_center = features.mean(dim=0)
+    else:
+        # global_center: [D]. Diagnostic macro/class-balanced mean.
+        global_center = class_means.mean(dim=0)
+
+    # between_distances: [C]
+    between_distances = ((class_means - global_center) ** 2).sum(dim=1)
+    between = between_distances.mean()
+    fdr = between / (within + eps)
+
+    return {
+        "within_class_variance": float(within.item()),
+        "between_class_variance": float(between.item()),
+        "fisher_discriminant_ratio": float(fdr.item()),
+    }
 
 
 def load_feature_cache(path: str) -> tuple[torch.Tensor, torch.Tensor, dict]:
@@ -206,6 +272,12 @@ def summarize(args: argparse.Namespace, features: torch.Tensor, labels: torch.Te
 
     # features: [N, D], labels: [N]
     normalized_features = F.normalize(features.float(), dim=1)
+    fdr_metrics = macro_fisher_discriminant_ratio(features, labels, global_mean=args.fdr_global_mean)
+    normalized_fdr_metrics = macro_fisher_discriminant_ratio(
+        normalized_features,
+        labels,
+        global_mean=args.fdr_global_mean,
+    )
     result = {
         "dataset": args.dataset,
         "split": args.split,
@@ -218,6 +290,11 @@ def summarize(args: argparse.Namespace, features: torch.Tensor, labels: torch.Te
         "class_counts": class_counts(labels),
         "intra_class_variance": macro_intra_class_variance(features, labels),
         "normalized_intra_class_variance": macro_intra_class_variance(normalized_features, labels),
+        "fdr_global_mean": args.fdr_global_mean,
+        **fdr_metrics,
+        "normalized_within_class_variance": normalized_fdr_metrics["within_class_variance"],
+        "normalized_between_class_variance": normalized_fdr_metrics["between_class_variance"],
+        "normalized_fisher_discriminant_ratio": normalized_fdr_metrics["fisher_discriminant_ratio"],
         "max_batches": metadata.get("max_batches", args.max_batches),
     }
     return result
@@ -236,6 +313,11 @@ def main(args: argparse.Namespace) -> None:
     print(
         "[FeatureMetrics] normalized intra-class variance: "
         f"{result['normalized_intra_class_variance']:.6f}"
+    )
+    print(
+        "[FeatureMetrics] normalized FDR: "
+        f"{result['normalized_fisher_discriminant_ratio']:.6f} "
+        f"(global_mean={result['fdr_global_mean']})"
     )
 
     if args.output_json:
