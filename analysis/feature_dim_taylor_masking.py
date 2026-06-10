@@ -235,7 +235,46 @@ def build_feature_mask(
     return mask, masked_indices, kept_indices
 
 
-def masked_variance_row(
+@torch.no_grad()
+def evaluate_masked_classifier(
+    classifier: torch.nn.Module,
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor,
+    batch_size: int,
+    device: torch.device,
+) -> dict:
+    """Evaluate the cached-feature classifier after applying one feature mask."""
+
+    # features: [N, D], labels: [N], mask: [D]
+    feature_loader = make_feature_loader(features, labels, batch_size)
+    mask = mask.to(device).view(1, -1)  # [1, D]
+
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    for batch_features, batch_labels in feature_loader:
+        # batch_features: [B, D], batch_labels: [B]
+        batch_features = batch_features.to(device)
+        batch_labels = batch_labels.to(device)
+
+        masked_features = batch_features * mask  # [B, D]
+        logits = classifier(masked_features)  # [B, C]
+        loss = F.cross_entropy(logits, batch_labels, reduction="sum")
+
+        total_loss += float(loss.item())
+        correct += int((logits.argmax(dim=1) == batch_labels).sum().item())
+        total += int(batch_labels.numel())
+
+    if total == 0:
+        raise ValueError("No examples were evaluated.")
+    return {
+        "ce_loss": total_loss / total,
+        "accuracy": 100.0 * correct / total,
+    }
+
+
+def masked_evaluation_row(
     features: torch.Tensor,
     labels: torch.Tensor,
     scores: torch.Tensor,
@@ -243,11 +282,22 @@ def masked_variance_row(
     policy: str,
     seed: int | None,
     metadata: dict,
+    classifier: torch.nn.Module,
+    batch_size: int,
+    device: torch.device,
 ) -> dict:
     # features: [N, D], labels: [N], scores: [D]
     mask, masked_indices, kept_indices = build_feature_mask(scores, ratio, policy, seed)
     masked_features = features.float() * mask.view(1, -1)  # [N, D]
     normalized_masked_features = F.normalize(masked_features, dim=1)  # [N, D]
+    classifier_metrics = evaluate_masked_classifier(
+        classifier=classifier,
+        features=features,
+        labels=labels,
+        mask=mask,
+        batch_size=batch_size,
+        device=device,
+    )
     return {
         **metadata,
         "mask_policy": policy,
@@ -257,6 +307,7 @@ def masked_variance_row(
         "kept_dims": int(kept_indices.numel()),
         "intra_class_variance": macro_intra_class_variance(masked_features, labels),
         "normalized_intra_class_variance": macro_intra_class_variance(normalized_masked_features, labels),
+        **classifier_metrics,
     }
 
 
@@ -315,7 +366,20 @@ def main(args: argparse.Namespace) -> None:
         seeds = random_seeds if policy == "random" else [None]
         for seed in seeds:
             for ratio in ratios:
-                rows.append(masked_variance_row(features, labels, scores, ratio, policy, seed, metadata))
+                rows.append(
+                    masked_evaluation_row(
+                        features=features,
+                        labels=labels,
+                        scores=scores,
+                        ratio=ratio,
+                        policy=policy,
+                        seed=seed,
+                        metadata=metadata,
+                        classifier=classifier,
+                        batch_size=args.batch_size,
+                        device=device,
+                    )
+                )
 
     for row in rows:
         seed_text = "" if row["seed"] is None else f" seed={row['seed']}"
@@ -324,7 +388,8 @@ def main(args: argparse.Namespace) -> None:
             f"policy={row['mask_policy']}{seed_text} "
             f"ratio={row['ratio']:.3f} masked={row['masked_dims']} kept={row['kept_dims']} "
             f"intra={row['intra_class_variance']:.6f} "
-            f"norm_intra={row['normalized_intra_class_variance']:.6f}"
+            f"norm_intra={row['normalized_intra_class_variance']:.6f} "
+            f"loss={row['ce_loss']:.6f} acc={row['accuracy']:.2f}"
         )
 
     if args.output_jsonl:
