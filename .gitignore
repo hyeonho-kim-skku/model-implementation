@@ -223,3 +223,8 @@ backups/
 pretrained_models/
 
 /pruned
+
+# Feature analysis artifacts
+analysis/features/*.pt
+analysis/features/*.json
+analysis/features/*.jsonl
