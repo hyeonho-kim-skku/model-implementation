@@ -20,6 +20,7 @@ from pruning.gate_taylor_cache import (
     save_gate_taylor_score_cache,
     validate_gate_taylor_score_cache,
 )
+from pruning.feature_dim_mask import load_feature_dim_mask
 from pruning.importance import MLPGateTaylorCollector
 from pruning.source import build_pruning_source
 from pruning.structured import compute_taylor_gradients, prune_model
@@ -82,6 +83,20 @@ def build_parser():
     add("--calibration-batches", dest="calibration_batches", default=None)
     add("--calibration-split", dest="calibration_split", choices=["train", "test"], default="train")
     add("--calibration-seed", dest="calibration_seed", type=int, default=42)
+    add(
+        "--calibration-objective",
+        dest="calibration_objective",
+        choices=["ce", "feature_dim_masked_ce"],
+        default="ce",
+    )
+    add("--feature-dim-score-path", dest="feature_dim_score_path", type=str, default=None)
+    add("--feature-dim-mask-ratio", dest="feature_dim_mask_ratio", type=float, default=0.0)
+    add(
+        "--feature-dim-mask-policy",
+        dest="feature_dim_mask_policy",
+        choices=["low", "high"],
+        default="low",
+    )
 
     add("--score-cache-path", dest="score_cache_path", type=str, default=None)
     add("--force-recompute-cache", dest="force_recompute_cache", action="store_true")
@@ -110,6 +125,16 @@ def normalize_args(args):
     bad_ratios = [ratio for ratio in args.ratios if ratio < 0.0 or ratio >= 1.0]
     if bad_ratios:
         raise ValueError(f"Ratios must be in [0.0, 1.0): {bad_ratios}")
+    if args.calibration_objective == "feature_dim_masked_ce":
+        if not args.feature_dim_score_path:
+            raise ValueError(
+                "--feature-dim-score-path is required for feature_dim_masked_ce."
+            )
+        if args.feature_dim_mask_ratio < 0.0 or args.feature_dim_mask_ratio >= 1.0:
+            raise ValueError(
+                "--feature-dim-mask-ratio must satisfy 0 <= ratio < 1, "
+                f"got {args.feature_dim_mask_ratio}."
+            )
 
     if (args.results_path is None) != (args.artifact_dir is None):
         raise ValueError("--results-path and --artifact-dir must be provided together.")
@@ -123,17 +148,21 @@ def normalize_args(args):
     aggregation_suffix = (
         "" if args.gate_taylor_aggregation == "elementwise" else f"_{args.gate_taylor_aggregation}"
     )
+    objective_suffix = ""
+    if args.calibration_objective == "feature_dim_masked_ce":
+        mask_tag = int(round(args.feature_dim_mask_ratio * 100))
+        objective_suffix = f"_feature_dim_masked_ce_{args.feature_dim_mask_policy}{mask_tag:03d}"
     args.experiment_prefix = (
         f"vit_base_{dataset}_lora50_gate_taylor_"
         f"{args.gate_taylor_location}_{args.gate_taylor_reduction}"
-        f"{aggregation_suffix}"
+        f"{aggregation_suffix}{objective_suffix}"
     )
     if len(args.ratios) == 1:
         args.results_path, args.artifact_dir = output_paths_for_ratio(args, args.ratios[0])
     args.score_cache_path = args.score_cache_path or (
         f"./pruned/cache/vit_base_{dataset}_lora50_gate_taylor_"
         f"{args.gate_taylor_location}_{args.gate_taylor_reduction}"
-        f"{aggregation_suffix}_full_scores.pth"
+        f"{aggregation_suffix}{objective_suffix}_full_scores.pth"
     )
     return args
 
@@ -151,7 +180,7 @@ def make_eval_loader(args):
     )
 
 
-def cache_metadata(args, source, calibration_config, scores):
+def cache_metadata(args, source, calibration_config, scores, feature_dim_mask_metadata=None):
     return {
         "dataset": args.calibration_dataset,
         "checkpoint_path": args.checkpoint_path,
@@ -162,6 +191,8 @@ def cache_metadata(args, source, calibration_config, scores):
         "gate_taylor_reduction": args.gate_taylor_reduction,
         "gate_taylor_aggregation": args.gate_taylor_aggregation,
         "gate_taylor_score_mode": "elementwise_gate_grad",
+        "calibration_objective": args.calibration_objective,
+        "feature_dim_mask": feature_dim_mask_metadata,
         "calibration_split": args.calibration_split,
         "calibration_batches": args.calibration_batches if args.calibration_batches is not None else "full",
         "calibration_seed": args.calibration_seed,
@@ -186,6 +217,26 @@ def validate_cache(args, source, scores, metadata):
         calibration_batches=args.calibration_batches,
         calibration_seed=args.calibration_seed,
     )
+    found_objective = metadata.get("calibration_objective", "ce")
+    if found_objective != args.calibration_objective:
+        raise ValueError(
+            "Gate Taylor score cache objective mismatch: "
+            f"expected {args.calibration_objective!r}, found {found_objective!r}."
+        )
+    if args.calibration_objective == "feature_dim_masked_ce":
+        found_mask = metadata.get("feature_dim_mask") or {}
+        expected_mask = {
+            "feature_dim_score_path": args.feature_dim_score_path,
+            "feature_dim_mask_ratio": float(args.feature_dim_mask_ratio),
+            "feature_dim_mask_policy": args.feature_dim_mask_policy,
+        }
+        mismatches = {
+            key: {"expected": value, "found": found_mask.get(key)}
+            for key, value in expected_mask.items()
+            if found_mask.get(key) != value
+        }
+        if mismatches:
+            raise ValueError(f"Feature-dim mask cache metadata mismatch: {mismatches}")
 
 
 def get_gate_taylor_scores(args, source):
@@ -204,6 +255,16 @@ def get_gate_taylor_scores(args, source):
         gate_location=args.gate_taylor_location,
         aggregation=args.gate_taylor_aggregation,
     )
+    feature_dim_mask = None
+    feature_dim_mask_metadata = None
+    if args.calibration_objective == "feature_dim_masked_ce":
+        expected_dim = source.model.classifier.in_features
+        feature_dim_mask, feature_dim_mask_metadata = load_feature_dim_mask(
+            path=args.feature_dim_score_path,
+            ratio=args.feature_dim_mask_ratio,
+            policy=args.feature_dim_mask_policy,
+            expected_dim=expected_dim,
+        )
     try:
         calibration_config = compute_taylor_gradients(
             model=source.model,
@@ -216,6 +277,9 @@ def get_gate_taylor_scores(args, source):
             device=DEVICE,
             calibration_seed=args.calibration_seed,
             gate_taylor_collector=collector,
+            calibration_objective=args.calibration_objective,
+            feature_dim_mask=feature_dim_mask,
+            feature_dim_mask_metadata=feature_dim_mask_metadata,
         )
         scores = capture_mlp_taylor_scores(source.model, collector.final_scores())
     finally:
@@ -224,7 +288,7 @@ def get_gate_taylor_scores(args, source):
     if not scores:
         raise ValueError("Gate Taylor calibration completed, but no MLP scores were found.")
 
-    metadata = cache_metadata(args, source, calibration_config, scores)
+    metadata = cache_metadata(args, source, calibration_config, scores, feature_dim_mask_metadata)
     save_gate_taylor_score_cache(cache_path, scores, metadata)
     validate_cache(args, source, scores, metadata)
     print(f"[GlobalGateTaylor] saved score cache: {cache_path}")
@@ -308,6 +372,10 @@ def metadata_row(args, baseline_metrics, cache_info, cache_loaded, ratio):
             "gate_taylor_location": args.gate_taylor_location,
             "gate_taylor_reduction": args.gate_taylor_reduction,
             "gate_taylor_aggregation": args.gate_taylor_aggregation,
+            "calibration_objective": args.calibration_objective,
+            "feature_dim_score_path": args.feature_dim_score_path,
+            "feature_dim_mask_ratio": args.feature_dim_mask_ratio,
+            "feature_dim_mask_policy": args.feature_dim_mask_policy,
             "score_cache_path": args.score_cache_path,
             "score_cache_loaded": cache_loaded,
             "calibration": cache_info.get("calibration_config", {}),

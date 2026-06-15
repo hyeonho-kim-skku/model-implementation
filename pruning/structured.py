@@ -24,6 +24,7 @@ from utils import move_to_device
 
 
 VALID_PRUNING_MODULES = {"head", "mlp"}
+VALID_TAYLOR_CALIBRATION_OBJECTIVES = {"ce", "feature_dim_masked_ce"}
 
 
 def _normalize_calibration_batches(calibration_batches):
@@ -320,11 +321,21 @@ def compute_taylor_gradients(
     calibration_seed=None,
     activation_taylor_collector=None,
     gate_taylor_collector=None,
+    calibration_objective="ce",
+    feature_dim_mask=None,
+    feature_dim_mask_metadata=None,
 ):
     """Run supervised batches so Taylor pruning criteria can read gradients."""
 
     if calibration_dataset is None:
         raise ValueError("Taylor pruning needs calibration_dataset.")
+    if calibration_objective not in VALID_TAYLOR_CALIBRATION_OBJECTIVES:
+        raise ValueError(
+            "calibration_objective must be one of "
+            f"{sorted(VALID_TAYLOR_CALIBRATION_OBJECTIVES)}, got {calibration_objective!r}."
+        )
+    if calibration_objective == "feature_dim_masked_ce" and feature_dim_mask is None:
+        raise ValueError("feature_dim_mask is required for feature_dim_masked_ce.")
 
     calibration_batches = _normalize_calibration_batches(calibration_batches)
     generator = None
@@ -346,6 +357,8 @@ def compute_taylor_gradients(
 
     model.eval()
     model.zero_grad(set_to_none=True)
+    if feature_dim_mask is not None:
+        feature_dim_mask = feature_dim_mask.to(device=device, dtype=torch.float32).view(1, -1)  # [1, D]
 
     processed_batches = 0
     total_examples = 0
@@ -353,7 +366,19 @@ def compute_taylor_gradients(
         if calibration_batches is not None and batch_idx >= calibration_batches:
             break
         images, labels = move_to_device(batch, device)
-        logits = model(images)
+        if calibration_objective == "ce":
+            logits = model(images)  # [B, C]
+        elif calibration_objective == "feature_dim_masked_ce":
+            features = model.forward_features(images)  # [B, D]
+            if features.shape[-1] != feature_dim_mask.shape[-1]:
+                raise ValueError(
+                    "Feature mask dimension does not match model features: "
+                    f"{feature_dim_mask.shape[-1]} != {features.shape[-1]}."
+                )
+            masked_features = features * feature_dim_mask  # [B, D]
+            logits = model.classifier(masked_features)  # [B, C]
+        else:
+            raise ValueError(f"Unsupported calibration objective: {calibration_objective!r}.")
         loss = F.cross_entropy(logits, labels, reduction="sum")
         # Do not optimizer.step(). Taylor pruning only needs d(loss)/d(weight).
         # Torch-Pruning reads parameter gradients later for weight Taylor. For
@@ -379,11 +404,14 @@ def compute_taylor_gradients(
         else "full",
         "split": calibration_split,
         "transform_mode": "test",
+        "objective": calibration_objective,
         "loss_reduction": "sum",
         "seed": calibration_seed,
         "processed_batches": processed_batches,
         "processed_examples": total_examples,
     }
+    if feature_dim_mask_metadata is not None:
+        calibration_config["feature_dim_mask"] = dict(feature_dim_mask_metadata)
     if activation_taylor_collector is not None:
         calibration_config["activation_taylor_reduction"] = (
             activation_taylor_collector.reduction
@@ -688,6 +716,9 @@ def prune_model(
     gate_taylor_reduction="sum_abs",
     gate_taylor_location="fc1_out",
     gate_taylor_aggregation="elementwise",
+    calibration_objective="ce",
+    feature_dim_mask=None,
+    feature_dim_mask_metadata=None,
     num_workers=4,
     data_root="./data",
     inspect_groups=False,
@@ -760,6 +791,13 @@ def prune_model(
         activation_taylor_scores = (
             {} if existing_activation_taylor_scores is None else existing_activation_taylor_scores
         )
+    if calibration_objective not in VALID_TAYLOR_CALIBRATION_OBJECTIVES:
+        raise ValueError(
+            "calibration_objective must be one of "
+            f"{sorted(VALID_TAYLOR_CALIBRATION_OBJECTIVES)}, got {calibration_objective!r}."
+        )
+    if calibration_objective == "feature_dim_masked_ce" and feature_dim_mask is None:
+        raise ValueError("feature_dim_mask is required for feature_dim_masked_ce.")
     if importance_type == "gate_taylor":
         if gate_taylor_reduction not in VALID_GATE_TAYLOR_REDUCTIONS:
             raise ValueError(
@@ -856,6 +894,9 @@ def prune_model(
                         calibration_seed=calibration_seed,
                         activation_taylor_collector=activation_taylor_collector,
                         gate_taylor_collector=gate_taylor_collector,
+                        calibration_objective=calibration_objective,
+                        feature_dim_mask=feature_dim_mask,
+                        feature_dim_mask_metadata=feature_dim_mask_metadata,
                     )
                     if activation_taylor_collector is not None:
                         activation_taylor_scores.update(
