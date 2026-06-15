@@ -231,6 +231,30 @@ Important files and exact numbers:
 - `analysis/plot_gate_taylor_aggregation_layer_distribution.py`
 - `analysis/plot_gate_taylor_recovery_split_tables.py`
 
+## Step 7: Feature-Dimension Masked CE Trial
+
+Question:
+
+> Can final-feature dimension selection provide a better neuron pruning signal?
+
+Setup:
+
+- CUB200, global MLP 50%, `fc2_in + sum_square + samplewise`.
+- Feature dimensions were ranked by elementwise-square Taylor scores; low 10% dims were masked before classifier CE for gate Taylor calibration.
+
+Result:
+
+| Method | Pruning-only | Recovery |
+|---|---:|---:|
+| Standard CE Gate Taylor | 82.95 | 86.78 |
+| Feature-dim masked CE | 82.43 | 86.50 |
+
+Takeaway:
+
+- Feature-dim masked CE was mathematically valid but did not outperform standard CE Gate Taylor.
+- Interpretation: low-Taylor feature dims are not purely nuisance dimensions, and standard CE remains the stronger task-preserving neuron scoring signal.
+- Figures: `figures/feature_dim_masking/`.
+
 ## Current Interpretation For Slides
 
 Main message:
