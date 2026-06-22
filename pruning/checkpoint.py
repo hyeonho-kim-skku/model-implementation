@@ -1,9 +1,7 @@
 """Checkpoint loading helpers for structured pruning.
 
-This module reconstructs a plain TIMMClassifier from a timm_lora checkpoint by
-loading the checkpoint's merged dense weights. The reconstructed model no longer
-contains LoRA wrapper modules, which makes it suitable for pruning utilities
-that operate on standard nn.Linear layers.
+This module reconstructs a plain TIMMClassifier from checkpoints that can be
+consumed by pruning utilities operating on standard nn.Linear layers.
 """
 
 import torch
@@ -18,22 +16,41 @@ def load_checkpoint(checkpoint_path, map_location="cpu"):
 
 
 def build_dense_model_from_checkpoint(checkpoint_path, map_location="cpu"):
-    # LoRA checkpoint 안에는 LoRA wrapper가 남아 있는 state_dict("model")와
-    # LoRA를 원래 Linear weight에 합친 dense state("merged_model")가 함께 저장된다.
-    # pruning은 일반 nn.Linear 구조에서 하는 편이 안전하므로 merged_model을 사용한다.
     checkpoint = load_checkpoint(checkpoint_path, map_location=map_location)
 
     if "model_config" not in checkpoint:
         raise ValueError("Checkpoint does not contain model_config.")
-    if "merged_model" not in checkpoint:
-        raise ValueError("Checkpoint does not contain merged_model.")
 
     model_config = checkpoint["model_config"]
+    model_name = model_config.get("model")
+
+    # Linear-probe checkpoints are already dense TIMMClassifier states. Rebuild
+    # with freeze_encoder=False so Torch-Pruning can structurally edit encoder
+    # layers; this does not run optimizer updates.
+    if model_name == "timm_classifier":
+        if "model" not in checkpoint:
+            raise ValueError("timm_classifier checkpoint does not contain model state.")
+        dense_model = TIMMClassifier(
+            backbone_name=model_config["backbone_name"],
+            num_classes=model_config["num_classes"],
+            pretrained=False,
+            img_size=model_config.get("img_size"),
+            freeze_encoder=False,
+        )
+        dense_model.load_state_dict(checkpoint["model"], strict=True)
+        return checkpoint, dense_model
+
+    # Preserve the existing timm_lora reconstruction path so older pruning
+    # configs keep working unchanged.
+    if model_name != "timm_lora":
+        raise ValueError(
+            "Only timm_classifier and timm_lora checkpoints are currently "
+            "supported for dense reconstruction."
+        )
+    if "merged_model" not in checkpoint:
+        raise ValueError("timm_lora checkpoint does not contain merged_model.")
+
     merged_model = checkpoint["merged_model"]
-
-    if model_config.get("model") != "timm_lora":
-        raise ValueError("Only timm_lora checkpoints are currently supported for dense reconstruction.")
-
     # LoRA wrapper가 없는 일반 TIMMClassifier를 같은 backbone/classifier shape으로 만든다.
     # pretrained=False인 이유는 곧 merged_model weight를 strict=True로 덮어쓸 것이기 때문이다.
     dense_model = TIMMClassifier(
