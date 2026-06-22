@@ -271,6 +271,49 @@ Supporting points:
 - Aggregation-axis ablation should be framed as the current main observation: aggregation granularity changes pruning-only behavior and leaves smaller effects after recovery.
 - Recovery follow-up is validation, not the main contribution.
 
+## Progressive Adaptation-Before-Pruning Baseline
+
+Question:
+
+> Before downstream backbone adaptation, which MLP channels can be removed while
+> preserving a representation that remains useful after LoRA adaptation?
+
+Protocol:
+
+- Start from a pretrained frozen backbone with a trained linear probe.
+- Use CE Gate Taylor with `fc2_in + sum_square + samplewise` and the full train split.
+- Progress from 10% to 60% cumulative MLP pruning, rescoring the current pruned
+  model at every step without classifier or backbone training between steps.
+- Recover each saved ratio independently with the same LoRA and classifier recipe.
+- CIFAR100, CUB200, FGVC-Aircraft, and Stanford Cars are included; Flowers102 is excluded.
+
+Recovery accuracy:
+
+| Dataset | 10% | 20% | 30% | 40% | 50% | 60% |
+|---|---:|---:|---:|---:|---:|---:|
+| CIFAR100 | 92.27 | 92.13 | 91.70 | 91.48 | 91.02 | 90.08 |
+| CUB200 | 86.61 | 86.56 | 86.45 | 86.54 | 86.43 | 86.31 |
+| FGVC-Aircraft | 71.05 | 70.51 | 70.18 | 71.38 | 71.59 | 70.21 |
+| Stanford Cars | 80.61 | 80.67 | 80.67 | 81.16 | 81.16 | 80.77 |
+
+Interpretation:
+
+- CIFAR100 and CUB200 retain strong post-pruning adaptability through 60%.
+- Aircraft and Cars recover below the earlier task-finetuned one-shot pruning runs,
+  suggesting that fine-grained tasks may need more task-aware channel selection.
+- Recovery here includes downstream adaptation as well as pruning repair, so it
+  should not be interpreted as pure restoration of the linear-probe source.
+- A 0% pruning run with the identical recovery recipe is the missing control.
+
+Current implementation:
+
+- CE scoring is implemented in `progressive_pruning/`.
+- The next scoring variant is fixed-prototype SupCon on normalized CLS features.
+  Prototypes should be computed once from the dense source and remain fixed across
+  progressive steps. Distillation is not currently part of the scoring design.
+- Exact per-step metrics and artifacts are under
+  `pruned/progressive_baseline_<dataset>/`.
+
 ## Reproducibility Notes
 
 - `main.py` saves `command.txt` and `args.json` in each run directory.
@@ -280,24 +323,15 @@ Supporting points:
 
 ## Next Experiment Candidates
 
-Primary next analyses:
+Primary next experiment:
 
-- Cancellation-ratio analysis for aggregation modes. Use exact score caches/results as source of truth; goal is to test whether channelwise and CIFAR100-tokenwise suffer from stronger signed cancellation.
-- Mask-overlap analysis between elementwise and samplewise/tokenwise masks. Goal is to check whether improvements come from different within-layer channel choices rather than coarse layer allocation.
+- Implement fixed-prototype SupCon scoring and run the same 10-60% progression
+  and CE recovery recipe used by the baseline.
+- Compare CE and prototype scoring through pruning-only and recovered accuracy.
+- Add a 0% pruning run with the same LoRA recipe as the recovery ceiling.
 
-Later method candidate:
+Later analyses:
 
-- Constrained/rebalanced global pruning at 60%.
-- Candidate constraints:
-  - per-layer pruning cap, for example max 80%;
-  - minimum hidden channels, for example 512 or 768;
-  - rebalanced budget away from blocks 9-10 and possibly toward block 11.
-
-Decision criterion:
-
-- If constrained 60% improves pruning-only accuracy while keeping recovery accuracy near unconstrained 60%, it supports the hypothesis that the current bottleneck is over-concentrated layer allocation.
-
-Optional checks:
-
-- Repeat FGVC-Aircraft 50/60 recovery to test the 60% > 50% observation.
-- Test CLS-only scoring for signed reductions as a diagnostic, not as the main method.
+- Use cancellation-ratio and mask-overlap analyses to explain aggregation behavior.
+- Revisit constrained or rebalanced global pruning if high-ratio layer allocation
+  remains a bottleneck.
