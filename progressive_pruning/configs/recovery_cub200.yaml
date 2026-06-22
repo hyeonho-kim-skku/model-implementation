@@ -1,0 +1,21 @@
+# LoRA recovery for progressive pruning CUB-200 artifacts.
+model: timm_pruned_lora
+artifact_path: null
+reset_classifier: false
+method: supervised
+dataset: cub200
+mode: supervised
+num_epochs: 20
+batch_size: 64
+optimizer: AdamW
+lr: 0.0005
+momentum: 0.9
+weight_decay: 0.05
+scheduler: CosineAnnealingLR
+warmup_epochs: 0
+num_classes: 200
+lora_rank: 4
+lora_alpha:
+lora_modules: qkv,proj,mlp
+qkv_lora_components: q,k,v
+
