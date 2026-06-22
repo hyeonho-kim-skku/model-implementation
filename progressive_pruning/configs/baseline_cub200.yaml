@@ -1,0 +1,21 @@
+# Baseline CE progressive pruning for CUB-200.
+source_type: checkpoint
+checkpoint_path: ./runs/timm_classifier_cub200_supervised/0511-163642/best_cls_ckpt.pth
+objective: ce
+dataset: cub200
+calibration_dataset: cub200
+target_ratios: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+pruning_modules: mlp
+global_pruning: true
+gate_taylor_location: fc2_in
+gate_taylor_reduction: sum_square
+gate_taylor_aggregation: samplewise
+calibration_split: train
+calibration_batches: full
+calibration_batch_size: 64
+batch_size: 64
+num_workers: 4
+data_root: ./data
+output_dir: ./pruned/progressive_baseline_cub200
+eval_each_step: true
+eval_split: test
