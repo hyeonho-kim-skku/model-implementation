@@ -271,48 +271,60 @@ Supporting points:
 - Aggregation-axis ablation should be framed as the current main observation: aggregation granularity changes pruning-only behavior and leaves smaller effects after recovery.
 - Recovery follow-up is validation, not the main contribution.
 
-## Progressive Adaptation-Before-Pruning Baseline
+## Step 8: Progressive Pruning Trials
 
 Question:
 
-> Before downstream backbone adaptation, which MLP channels can be removed while
-> preserving a representation that remains useful after LoRA adaptation?
+> Does progressive re-scoring produce better pruning masks than one-shot scoring?
 
 Protocol:
 
-- Start from a pretrained frozen backbone with a trained linear probe.
-- Use CE Gate Taylor with `fc2_in + sum_square + samplewise` and the full train split.
-- Progress from 10% to 60% cumulative MLP pruning, rescoring the current pruned
-  model at every step without classifier or backbone training between steps.
-- Recover each saved ratio independently with the same LoRA and classifier recipe.
-- CIFAR100, CUB200, FGVC-Aircraft, and Stanford Cars are included; Flowers102 is excluded.
+- Progressive pruning is implemented as a separate research pipeline under
+  `progressive_pruning/`.
+- CE-guided progressive pruning repeats score/prune to cumulative 10-60% MLP
+  pruning targets.
+- Fixed-prototype progressive pruning scores normalized CLS features against
+  cached class prototypes from the source model.
+- Adapted-source CE progressive starts from the LoRA-adapted checkpoint instead
+  of the linear-probe source.
+- A prune-recover variant adds 1 epoch of LoRA + classifier recovery before the
+  next re-scoring step.
+- Each saved ratio is recovered independently with a matched LoRA recovery
+  recipe. Flowers102 is excluded from this round.
 
-Recovery accuracy:
+Main observations:
 
-| Dataset | 10% | 20% | 30% | 40% | 50% | 60% |
-|---|---:|---:|---:|---:|---:|---:|
-| CIFAR100 | 92.27 | 92.13 | 91.70 | 91.48 | 91.02 | 90.08 |
-| CUB200 | 86.61 | 86.56 | 86.45 | 86.54 | 86.43 | 86.31 |
-| FGVC-Aircraft | 71.05 | 70.51 | 70.18 | 71.38 | 71.59 | 70.21 |
-| Stanford Cars | 80.61 | 80.67 | 80.67 | 81.16 | 81.16 | 80.77 |
+- CE progressive pruning did not clearly outperform matched one-shot pruning.
+- Using an adapted source helped on fine-grained datasets, but progressive
+  re-scoring itself still did not give a consistent gain over one-shot.
+- Adding 1-epoch intermediate recovery before re-scoring changed the pruning
+  path, but did not meaningfully improve final recovered accuracy.
+- Recovery protocol is a major confound. Resetting and re-training the
+  classifier during recovery substantially improved some recovered results,
+  especially on FGVC-Aircraft and Stanford Cars.
+- A 0% recovery control showed that fresh LoRA recovery with classifier reset
+  can improve accuracy even without pruning, so pruning gains must be compared
+  against matched recovery controls.
 
 Interpretation:
 
-- CIFAR100 and CUB200 retain strong post-pruning adaptability through 60%.
-- Aircraft and Cars recover below the earlier task-finetuned one-shot pruning runs,
-  suggesting that fine-grained tasks may need more task-aware channel selection.
-- Recovery here includes downstream adaptation as well as pruning repair, so it
-  should not be interpreted as pure restoration of the linear-probe source.
-- A 0% pruning run with the identical recovery recipe is the missing control.
+- Simple CE-based progressive pruning is not the main source of gains under the
+  current setup.
+- Source adaptation and recovery design explain much of the observed difference.
+- Classifier reset likely helps because pruning changes feature geometry; keeping
+  the dense classifier can bias LoRA recovery toward the old feature-boundary
+  alignment.
+- Future comparisons should use matched recovery settings, include 0% controls,
+  and test whether representation-aware scoring can select better masks than CE.
 
 Current implementation:
 
-- CE scoring is implemented in `progressive_pruning/`.
-- The next scoring variant is fixed-prototype SupCon on normalized CLS features.
-  Prototypes should be computed once from the dense source and remain fixed across
-  progressive steps. Distillation is not currently part of the scoring design.
-- Exact per-step metrics and artifacts are under
-  `pruned/progressive_baseline_<dataset>/`.
+- Main code lives in `progressive_pruning/objectives.py`,
+  `progressive_pruning/pipeline.py`, `progressive_pruning/recovery.py`, and
+  `progressive_pruning/representation.py`.
+- New pruning configs live under `progressive_pruning/configs/pruning/`.
+- New recovery configs live under `progressive_pruning/configs/recovery/`.
+- Meeting figures and result tables are under `figures/progressive_pruning/`.
 
 ## Reproducibility Notes
 
@@ -325,10 +337,13 @@ Current implementation:
 
 Primary next experiment:
 
-- Implement fixed-prototype SupCon scoring and run the same 10-60% progression
-  and CE recovery recipe used by the baseline.
-- Compare CE and prototype scoring through pruning-only and recovered accuracy.
-- Add a 0% pruning run with the same LoRA recipe as the recovery ceiling.
+- Improve iterative progressive pruning only if it is tested with stronger
+  controls: longer intermediate recovery, smaller pruning steps, or classifier
+  reset during intermediate recovery.
+- Run adapted-source prototype progressive pruning to test whether
+  representation-aware scoring gives a better mask than CE.
+- Keep matched 0% controls for any recovery protocol that changes classifier
+  reset, LoRA rank, or recovery budget.
 
 Later analyses:
 
