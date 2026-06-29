@@ -18,6 +18,7 @@ from datasets import get_loader
 from pruning.gate_taylor_cache import capture_mlp_taylor_scores, restore_mlp_taylor_scores
 from pruning.importance import MLPGateTaylorCollector
 from pruning.structured import compute_taylor_gradients, prune_model
+from progressive_pruning.recovery import recover_model_with_lora
 
 
 def parse_target_ratios(value):
@@ -86,13 +87,15 @@ def make_eval_loader(config):
 def compute_gate_taylor_scores(model, objective, config, device):
     """Compute one current-model gate Taylor score snapshot."""
 
-    if getattr(objective, "calibration_objective", None) != "ce":
-        raise NotImplementedError(
-            "Only the CE baseline objective is implemented for scoring."
-        )
+    calibration_loss_fn = getattr(objective, "loss", None)
+    calibration_objective = getattr(
+        objective,
+        "calibration_objective",
+        getattr(objective, "name", None),
+    )
+    if not calibration_objective:
+        raise ValueError("Scoring objective must define a name or calibration_objective.")
 
-    # TODO(progressive_pruning): route the Prototype/SupCon objective through an
-    # objective.loss callback instead of structured.py's built-in CE branch.
     collector = MLPGateTaylorCollector(
         model=model,
         reduction=config.get("gate_taylor_reduction", "sum_square"),
@@ -112,8 +115,10 @@ def compute_gate_taylor_scores(model, objective, config, device):
             device=device,
             calibration_seed=config.get("calibration_seed"),
             gate_taylor_collector=collector,
-            calibration_objective=objective.calibration_objective,
+            calibration_objective=calibration_objective,
+            calibration_loss_fn=calibration_loss_fn,
         )
+        calibration_config["scoring_objective"] = objective.metadata()
         scores = capture_mlp_taylor_scores(model, collector.final_scores())
     finally:
         collector.remove()
@@ -151,12 +156,13 @@ def run_progressive_pruning(source, objective, config, device):
     original_mlp_hidden = total_mlp_hidden(current_model)
     previous_target = 0.0
     rows = []
+    objective_metadata = objective.metadata()
 
     metadata = {
         "type": "metadata",
         "source": source.source_info,
         "model_config": source.model_config,
-        "objective": objective.metadata(),
+        "objective": objective_metadata,
         "target_ratios": target_ratios,
         "config": {
             "pruning_modules": config.get("pruning_modules", "mlp"),
@@ -197,6 +203,7 @@ def run_progressive_pruning(source, objective, config, device):
             "previous_target_ratio": previous_target,
             "target_ratio": target_ratio,
             "step_ratio": step_ratio,
+            "objective": objective_metadata,
         }
 
         artifact = prune_model(
@@ -261,6 +268,7 @@ def run_progressive_pruning(source, objective, config, device):
             "step_ratio": step_ratio,
             "artifact_path": output_path if save_artifacts else None,
             "metrics": metrics,
+            "objective": objective_metadata,
             "progressive_cumulative_stats": cumulative_stats,
             "pruning_config": artifact.get("pruning_config", {}),
             "pruning_stats": artifact.get("pruning_stats", {}),
@@ -270,6 +278,199 @@ def run_progressive_pruning(source, objective, config, device):
 
         current_model = artifact["model"].to(device)
         current_model.eval()
+        previous_target = target_ratio
+
+    return rows
+
+
+def run_prune_recover_progressive(source, objective, config, device):
+    """Run score -> prune -> short recovery -> rescore progressive pruning."""
+
+    if getattr(objective, "calibration_objective", None) != "ce":
+        raise ValueError("Prune-recover progressive currently supports CE scoring only.")
+
+    target_ratios = parse_target_ratios(config.get("target_ratios"))
+    output_dir = config.get("output_dir")
+    if output_dir is None:
+        raise ValueError("output_dir is required.")
+    results_path = config.get("results_path") or str(Path(output_dir) / "results.jsonl")
+    save_artifacts = bool(config.get("save_artifacts", True))
+    eval_loader = make_eval_loader(config)
+
+    current_model = source.model.to(device)
+    current_model.eval()
+    original_mlp_hidden = total_mlp_hidden(current_model)
+    previous_target = 0.0
+    rows = []
+    objective_metadata = objective.metadata()
+
+    metadata = {
+        "type": "metadata",
+        "pipeline_mode": "prune_recover",
+        "source": source.source_info,
+        "model_config": source.model_config,
+        "objective": objective_metadata,
+        "target_ratios": target_ratios,
+        "config": {
+            "pruning_modules": config.get("pruning_modules", "mlp"),
+            "global_pruning": config.get("global_pruning", True),
+            "gate_taylor_location": config.get("gate_taylor_location", "fc2_in"),
+            "gate_taylor_reduction": config.get("gate_taylor_reduction", "sum_square"),
+            "gate_taylor_aggregation": config.get("gate_taylor_aggregation", "elementwise"),
+            "calibration_dataset": config.get("calibration_dataset") or config.get("dataset"),
+            "calibration_split": config.get("calibration_split", "train"),
+            "calibration_batches": config.get("calibration_batches", None),
+            "intermediate_recovery_epochs": config.get(
+                "intermediate_recovery_epochs",
+                1,
+            ),
+            "intermediate_recovery_lora_rank": config.get(
+                "intermediate_recovery_lora_rank",
+                4,
+            ),
+            "intermediate_recovery_reset_classifier": False,
+            "save_artifacts": save_artifacts,
+            "saved_artifact_state": "pruning_output_before_intermediate_recovery",
+        },
+    }
+    write_jsonl(results_path, metadata, mode="w")
+
+    for step_index, target_ratio in enumerate(target_ratios, start=1):
+        step_ratio = cumulative_to_step_ratio(previous_target, target_ratio)
+        scores, calibration_config = compute_gate_taylor_scores(
+            current_model,
+            objective,
+            config,
+            device,
+        )
+
+        output_path = artifact_path_for(output_dir, target_ratio)
+        is_final_step = step_index == len(target_ratios)
+        calibration = dict(calibration_config)
+        calibration.update(
+            {
+                "progressive_step_index": step_index,
+                "progressive_previous_target_ratio": previous_target,
+                "progressive_target_ratio": target_ratio,
+                "progressive_step_ratio": step_ratio,
+                "scoring_source": (
+                    "original_source" if step_index == 1 else "previous_post_recovery"
+                ),
+            }
+        )
+        source_info = deepcopy(source.source_info)
+        source_info["progressive_pruning"] = {
+            "pipeline_mode": "prune_recover",
+            "step_index": step_index,
+            "previous_target_ratio": previous_target,
+            "target_ratio": target_ratio,
+            "step_ratio": step_ratio,
+            "objective": objective_metadata,
+        }
+
+        artifact = prune_model(
+            model=current_model,
+            model_config=source.model_config,
+            source_info=source_info,
+            output_dir=os.path.dirname(output_path),
+            output_path=output_path,
+            importance="gate_taylor",
+            pruning_ratio=step_ratio,
+            pruning_modules=config.get("pruning_modules", "mlp"),
+            target_block_indices=config.get("target_block_indices"),
+            iterative_steps=1,
+            global_pruning=config.get("global_pruning", True),
+            round_to=config.get("round_to"),
+            gate_taylor_reduction=config.get("gate_taylor_reduction", "sum_square"),
+            gate_taylor_location=config.get("gate_taylor_location", "fc2_in"),
+            gate_taylor_aggregation=config.get("gate_taylor_aggregation", "elementwise"),
+            inspect_groups=config.get("inspect_groups", False),
+            use_existing_taylor_gradients=True,
+            existing_calibration_config=calibration,
+            existing_gate_taylor_scores=restore_mlp_taylor_scores(current_model, scores),
+            save_artifact=False,
+            verbose=config.get("verbose", True),
+            device=device,
+        )
+
+        current_mlp_hidden = total_mlp_hidden(artifact["model"])
+        cumulative_pruned_hidden = original_mlp_hidden - current_mlp_hidden
+        cumulative_stats = {
+            "original_mlp_hidden": original_mlp_hidden,
+            "current_mlp_hidden": current_mlp_hidden,
+            "cumulative_pruned_hidden": cumulative_pruned_hidden,
+            "cumulative_pruned_ratio": cumulative_pruned_hidden / original_mlp_hidden,
+            "target_ratio": target_ratio,
+        }
+        artifact_metadata = {
+            "pipeline_mode": "prune_recover",
+            "state": "pruning_output",
+            "step_index": step_index,
+            "previous_target_ratio": previous_target,
+            "target_ratio": target_ratio,
+            "step_ratio": step_ratio,
+            "cumulative_stats": cumulative_stats,
+            "intermediate_recovery_applied_to_saved_artifact": False,
+            "intermediate_recovery_planned_for_next_step": not is_final_step,
+        }
+        artifact["progressive_pruning"] = artifact_metadata
+        artifact.setdefault("pruning_stats", {})[
+            "progressive_cumulative_stats"
+        ] = cumulative_stats
+        if save_artifacts:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            torch.save(artifact, output_path)
+
+        pruning_output_metrics = None
+        if eval_loader is not None and config.get("eval_each_step", True):
+            pruning_output_metrics = evaluate_classifier(
+                artifact["model"].to(device),
+                eval_loader,
+                device,
+                max_batches=config.get("max_batches"),
+            )
+
+        recovery_metadata = None
+        next_scoring_model = None
+        next_scoring_metrics = None
+        if not is_final_step:
+            next_scoring_model, recovery_metadata = recover_model_with_lora(
+                artifact["model"].to(device),
+                config,
+                device,
+                step_index,
+            )
+            if eval_loader is not None and config.get("eval_each_step", True):
+                next_scoring_metrics = evaluate_classifier(
+                    next_scoring_model,
+                    eval_loader,
+                    device,
+                    max_batches=config.get("max_batches"),
+                )
+
+        row = {
+            "type": "trial",
+            "pipeline_mode": "prune_recover",
+            "step_index": step_index,
+            "target_ratio": target_ratio,
+            "step_ratio": step_ratio,
+            "artifact_path": output_path if save_artifacts else None,
+            "artifact_state": "pruning_output",
+            "pruning_output_metrics": pruning_output_metrics,
+            "next_scoring_model_metrics": next_scoring_metrics,
+            "intermediate_recovery": recovery_metadata,
+            "intermediate_recovery_applied": not is_final_step,
+            "objective": objective_metadata,
+            "progressive_cumulative_stats": cumulative_stats,
+            "pruning_config": artifact.get("pruning_config", {}),
+            "pruning_stats": artifact.get("pruning_stats", {}),
+        }
+        write_jsonl(results_path, row)
+        rows.append(row)
+
+        if not is_final_step:
+            current_model = next_scoring_model
+            current_model.eval()
         previous_target = target_ratio
 
     return rows

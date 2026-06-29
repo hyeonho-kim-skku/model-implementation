@@ -1,0 +1,26 @@
+# Fixed-prototype contrastive progressive pruning for FGVC-Aircraft.
+source_type: checkpoint
+checkpoint_path: ./runs/timm_classifier_fgvc_aircraft_supervised/0523-174841/best_cls_ckpt.pth
+objective: prototype_contrastive
+dataset: fgvc_aircraft
+calibration_dataset: fgvc_aircraft
+prototype_cache_path: ./pruned/cache/progressive_fgvc_aircraft_dense_cls_prototypes.pth
+prototype_temperature: 0.1
+prototype_split: train
+prototype_eval_split: test
+prototype_batch_size: 64
+target_ratios: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+pruning_modules: mlp
+global_pruning: true
+gate_taylor_location: fc2_in
+gate_taylor_reduction: sum_square
+gate_taylor_aggregation: samplewise
+calibration_split: train
+calibration_batches: full
+calibration_batch_size: 64
+batch_size: 64
+num_workers: 4
+data_root: ./data
+output_dir: ./pruned/progressive_prototype_fgvc_aircraft
+eval_each_step: true
+eval_split: test

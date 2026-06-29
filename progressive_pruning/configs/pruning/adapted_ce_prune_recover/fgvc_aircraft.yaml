@@ -1,0 +1,37 @@
+# CE progressive pruning with 1-epoch LoRA recovery between pruning steps.
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_fgvc_aircraft_supervised/0523-182219/best_cls_ckpt.pth
+pipeline_mode: prune_recover
+objective: ce
+dataset: fgvc_aircraft
+calibration_dataset: fgvc_aircraft
+target_ratios: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+pruning_modules: mlp
+global_pruning: true
+gate_taylor_location: fc2_in
+gate_taylor_reduction: sum_square
+gate_taylor_aggregation: samplewise
+calibration_split: train
+calibration_batches: full
+calibration_batch_size: 64
+calibration_seed: 42
+batch_size: 64
+num_workers: 4
+data_root: ./data
+output_dir: ./pruned/progressive_adapted_ce_prune_recover_fgvc_aircraft
+eval_each_step: true
+eval_split: test
+seed: 42
+
+intermediate_recovery_epochs: 1
+intermediate_recovery_batch_size: 64
+intermediate_recovery_optimizer: AdamW
+intermediate_recovery_lr: 0.0005
+intermediate_recovery_weight_decay: 0.05
+intermediate_recovery_scheduler: CosineAnnealingLR
+intermediate_recovery_warmup_epochs: 0
+intermediate_recovery_lora_rank: 4
+intermediate_recovery_lora_alpha:
+intermediate_recovery_lora_modules: qkv,proj,mlp
+intermediate_recovery_qkv_lora_components: q,k,v
+intermediate_recovery_seed: 42

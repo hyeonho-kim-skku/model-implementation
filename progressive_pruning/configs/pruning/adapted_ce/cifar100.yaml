@@ -1,0 +1,23 @@
+# CE progressive pruning from a task-adapted CIFAR-100 backbone.
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_cifar100_supervised/0511-224807/best_cls_ckpt.pth
+objective: ce
+dataset: cifar100
+calibration_dataset: cifar100
+target_ratios: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+pruning_modules: mlp
+global_pruning: true
+gate_taylor_location: fc2_in
+gate_taylor_reduction: sum_square
+gate_taylor_aggregation: samplewise
+calibration_split: train
+calibration_batches: full
+calibration_batch_size: 64
+calibration_seed: 42
+batch_size: 64
+num_workers: 4
+data_root: ./data
+output_dir: ./pruned/progressive_adapted_ce_cifar100
+eval_each_step: true
+eval_split: test
+seed: 42

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -15,7 +16,11 @@ if __package__ is None or __package__ == "":
 
 from pruning.source import build_pruning_source
 from progressive_pruning.objectives import build_objective
-from progressive_pruning.pipeline import parse_target_ratios, run_progressive_pruning
+from progressive_pruning.pipeline import (
+    parse_target_ratios,
+    run_progressive_pruning,
+    run_prune_recover_progressive,
+)
 
 
 def parse_calibration_batches(value):
@@ -33,8 +38,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     add = parser.add_argument
 
-    # Keep this entrypoint config-driven so CE and Prototype/SupCon share one
-    # CLI.
+    # Keep this entrypoint config-driven so CE and fixed-prototype contrastive
+    # scoring share one CLI.
     add("--config", type=str, help="Path to a YAML config file.")
     add("--source-type", dest="source_type", choices=["checkpoint", "timm"])
     add("--checkpoint-path", dest="checkpoint_path")
@@ -44,6 +49,12 @@ def parse_args():
     add("--pretrained", action=argparse.BooleanOptionalAction, default=True)
 
     add("--objective", type=str, default="ce")
+    add("--prototype-cache-path", dest="prototype_cache_path", type=str, default=None)
+    add("--prototype-temperature", dest="prototype_temperature", type=float, default=0.1)
+    add("--prototype-dataset", dest="prototype_dataset", type=str, default=None)
+    add("--prototype-split", dest="prototype_split", choices=["train", "test"], default="train")
+    add("--prototype-batch-size", dest="prototype_batch_size", type=int, default=None)
+    add("--prototype-eval-split", dest="prototype_eval_split", choices=["train", "test"], default="test")
     add("--dataset", type=str)
     add("--calibration-dataset", dest="calibration_dataset", type=str)
     add("--calibration-batch-size", dest="calibration_batch_size", type=int, default=64)
@@ -73,6 +84,104 @@ def parse_args():
     add("--max-batches", dest="max_batches", type=int, default=None)
     add("--seed", type=int, default=42)
     add("--verbose", action=argparse.BooleanOptionalAction, default=True)
+    add("--prepare-objective-only", dest="prepare_objective_only", action="store_true")
+
+    add(
+        "--pipeline-mode",
+        dest="pipeline_mode",
+        choices=["rescore_only", "prune_recover"],
+        default="rescore_only",
+    )
+    add(
+        "--intermediate-recovery-epochs",
+        dest="intermediate_recovery_epochs",
+        type=int,
+        default=1,
+    )
+    add(
+        "--intermediate-recovery-batch-size",
+        dest="intermediate_recovery_batch_size",
+        type=int,
+        default=None,
+    )
+    add(
+        "--intermediate-recovery-batches",
+        dest="intermediate_recovery_batches",
+        type=int,
+        default=None,
+    )
+    add(
+        "--intermediate-recovery-optimizer",
+        dest="intermediate_recovery_optimizer",
+        type=str,
+        default="AdamW",
+    )
+    add(
+        "--intermediate-recovery-lr",
+        dest="intermediate_recovery_lr",
+        type=float,
+        default=5e-4,
+    )
+    add(
+        "--intermediate-recovery-classifier-lr",
+        dest="intermediate_recovery_classifier_lr",
+        type=float,
+        default=None,
+    )
+    add(
+        "--intermediate-recovery-weight-decay",
+        dest="intermediate_recovery_weight_decay",
+        type=float,
+        default=0.05,
+    )
+    add(
+        "--intermediate-recovery-momentum",
+        dest="intermediate_recovery_momentum",
+        type=float,
+        default=0.9,
+    )
+    add(
+        "--intermediate-recovery-scheduler",
+        dest="intermediate_recovery_scheduler",
+        type=str,
+        default="CosineAnnealingLR",
+    )
+    add(
+        "--intermediate-recovery-warmup-epochs",
+        dest="intermediate_recovery_warmup_epochs",
+        type=int,
+        default=0,
+    )
+    add(
+        "--intermediate-recovery-lora-rank",
+        dest="intermediate_recovery_lora_rank",
+        type=int,
+        default=4,
+    )
+    add(
+        "--intermediate-recovery-lora-alpha",
+        dest="intermediate_recovery_lora_alpha",
+        type=float,
+        default=None,
+    )
+    add(
+        "--intermediate-recovery-lora-modules",
+        dest="intermediate_recovery_lora_modules",
+        type=str,
+        default="qkv,proj,mlp",
+    )
+    add(
+        "--intermediate-recovery-qkv-lora-components",
+        dest="intermediate_recovery_qkv_lora_components",
+        type=str,
+        default="q,k,v",
+    )
+    add(
+        "--intermediate-recovery-seed",
+        dest="intermediate_recovery_seed",
+        type=int,
+        default=None,
+    )
 
     args, _ = parser.parse_known_args()
     if args.config:
@@ -108,10 +217,17 @@ def main():
     # Source loading remains delegated to pruning/ so checkpoint/timm behavior
     # is shared with existing pruning entrypoints.
     source = build_pruning_source(config, device=device)
-    objective = build_objective(args.objective)
+    objective = build_objective(args.objective, config=config)
     objective.setup(source, device)
+    if args.prepare_objective_only:
+        print(json.dumps(objective.metadata(), indent=2))
+        print("[ProgressivePruning] objective preparation completed.")
+        return
 
-    rows = run_progressive_pruning(source, objective, config, device)
+    if args.pipeline_mode == "prune_recover":
+        rows = run_prune_recover_progressive(source, objective, config, device)
+    else:
+        rows = run_progressive_pruning(source, objective, config, device)
     print(f"[ProgressivePruning] completed {len(rows)} pruning steps.")
 
 
