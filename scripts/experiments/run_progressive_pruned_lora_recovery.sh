@@ -8,7 +8,8 @@ EPOCHS="${EPOCHS:-20}"
 DATASETS="${DATASETS:-cifar100,cub200,fgvc_aircraft,stanford_cars}"
 TARGETS="${TARGETS:-010,020,030,040,050,060}"
 TIMEZONE="${TIMEZONE:-Asia/Seoul}"
-LOG_DIR="${LOG_DIR:-logs/progressive_pruned_lora_recovery_$(TZ="$TIMEZONE" date +%Y%m%d_%H%M%S)}"
+PRUNING_EXPERIMENT="${PRUNING_EXPERIMENT:-baseline}"
+LOG_DIR="${LOG_DIR:-logs/progressive_${PRUNING_EXPERIMENT}_lora_recovery_$(TZ="$TIMEZONE" date +%Y%m%d_%H%M%S)}"
 
 mkdir -p "$LOG_DIR"
 
@@ -22,10 +23,24 @@ declare -A CONFIGS=(
 run_recovery() {
   local dataset="$1"
   local target="$2"
-  local config_path="${CONFIGS[$dataset]}"
-  local artifact_path="./pruned/progressive_baseline_${dataset}/target${target}/pruned_timm_classifier.pth"
-  local name="progressive_pruned_lora_recovery_${dataset}_target${target}"
+  local config_path="progressive_pruning/configs/recovery/${PRUNING_EXPERIMENT}/${dataset}.yaml"
+  local legacy_config_path="progressive_pruning/configs/recovery_${PRUNING_EXPERIMENT}_${dataset}.yaml"
+  local artifact_path="./pruned/progressive_${PRUNING_EXPERIMENT}_${dataset}/target${target}/pruned_timm_classifier.pth"
+  local name="progressive_${PRUNING_EXPERIMENT}_lora_recovery_${dataset}_target${target}"
   local log_path="${LOG_DIR}/${name}.log"
+
+  if [ ! -f "$config_path" ] && [ -f "$legacy_config_path" ]; then
+    config_path="$legacy_config_path"
+  fi
+
+  if [ "$PRUNING_EXPERIMENT" = "baseline" ] && [ ! -f "$config_path" ]; then
+    config_path="${CONFIGS[$dataset]}"
+  fi
+
+  if [ ! -f "$config_path" ]; then
+    echo "Missing config: ${config_path}" >&2
+    exit 1
+  fi
 
   if [ ! -f "$artifact_path" ]; then
     echo "Missing artifact: ${artifact_path}" >&2
@@ -49,6 +64,7 @@ run_recovery() {
 
 echo "Datasets: ${DATASETS}"
 echo "Targets: ${TARGETS}"
+echo "Pruning experiment: ${PRUNING_EXPERIMENT}"
 echo "Log dir: ${LOG_DIR}"
 
 IFS=',' read -ra selected_datasets <<< "$DATASETS"

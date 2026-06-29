@@ -1,4 +1,4 @@
-# LoRA recovery for progressive pruning CUB-200 artifacts.
+# LoRA recovery for prototype-scored progressive CUB-200 pruning artifacts.
 model: timm_pruned_lora
 artifact_path: null
 reset_classifier: true

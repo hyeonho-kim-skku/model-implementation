@@ -1,7 +1,7 @@
 # LoRA recovery for progressive pruning FGVC-Aircraft artifacts.
 model: timm_pruned_lora
 artifact_path: null
-reset_classifier: false
+reset_classifier: true
 method: supervised
 dataset: fgvc_aircraft
 mode: supervised
@@ -18,4 +18,3 @@ lora_rank: 4
 lora_alpha:
 lora_modules: qkv,proj,mlp
 qkv_lora_components: q,k,v
-

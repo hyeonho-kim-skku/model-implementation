@@ -1,9 +1,9 @@
-# LoRA recovery for progressive pruning CUB-200 artifacts.
+# LoRA recovery for prototype-scored progressive FGVC-Aircraft pruning artifacts.
 model: timm_pruned_lora
 artifact_path: null
 reset_classifier: true
 method: supervised
-dataset: cub200
+dataset: fgvc_aircraft
 mode: supervised
 num_epochs: 20
 batch_size: 64
@@ -13,7 +13,7 @@ momentum: 0.9
 weight_decay: 0.05
 scheduler: CosineAnnealingLR
 warmup_epochs: 0
-num_classes: 200
+num_classes: 100
 lora_rank: 4
 lora_alpha:
 lora_modules: qkv,proj,mlp

@@ -1,4 +1,4 @@
-# LoRA recovery for progressive pruning CUB-200 artifacts.
+# Final independent 20-epoch recovery for prune-recover CUB200 artifacts.
 model: timm_pruned_lora
 artifact_path: null
 reset_classifier: true
