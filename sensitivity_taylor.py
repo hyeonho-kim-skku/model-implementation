@@ -1,19 +1,35 @@
-"""Layer-wise Taylor pruning sensitivity entrypoint.
+"""Layer-wise pruning sensitivity entrypoint.
 
 Default experiment for ViT-Base:
   layers 0..11 x ratios 0.0,0.1,...,0.9 = 120 trials.
   Each trial prunes only one transformer block for the configured target
   modules, such as MLP hidden neurons or attention heads.
 
-Pipeline:
-  load dense checkpoint -> eval reference baseline -> compute Taylor gradients
-  once -> snapshot parameter.grad -> for each (layer, ratio), deepcopy the
-  unpruned model, restore grads, call prune_model(target_block_indices=[layer]),
-  eval, append one JSONL row.
+Common command path:
+  scripts/experiments/run_head_gate_taylor_sensitivity.sh
+    -> scripts/sensitivity_taylor.sh
+    -> python sensitivity_taylor.py --config <dataset config>
+
+High-level pipeline:
+  1. Load one dense checkpoint and evaluate its reference baseline.
+  2. Run calibration once on the unpruned model.
+  3. Snapshot the pruning signal needed by the chosen importance type.
+  4. For each (layer, pruning amount), deepcopy the original dense model,
+     restore the same calibration signal, prune only that one layer, evaluate,
+     and append one JSONL row.
+
+The calibration snapshot differs by importance:
+  - taylor: parameter.grad tensors are captured and restored.
+  - activation_taylor / gate_taylor: MLP hidden-channel scores are captured.
+  - head_gate_taylor: attention-head scores shaped [num_heads] are captured.
 
 ratio=0.0 is a no-op prune, but it still exercises the pruning pipeline. Every
 trial starts from the same unpruned model and same calibration gradients; never
 prune cumulatively across layers or ratios.
+
+For head_gate_taylor sensitivity, pruned_head_counts=[1..11] means:
+  dense model -> prune the lowest-scoring k heads in block i -> evaluate,
+  repeated independently for each block i and each k.
 """
 
 import argparse
@@ -28,7 +44,12 @@ import yaml
 from datasets import get_loader
 from engine import evaluate_classifier
 from pruning.gate_taylor_cache import capture_mlp_taylor_scores, restore_mlp_taylor_scores
-from pruning.importance import MLPActivationTaylorCollector, MLPGateTaylorCollector
+from pruning.head_taylor_cache import capture_head_taylor_scores, restore_head_taylor_scores
+from pruning.importance import (
+    AttentionHeadGateTaylorCollector,
+    MLPActivationTaylorCollector,
+    MLPGateTaylorCollector,
+)
 from pruning.source import build_pruning_source
 from pruning.structured import compute_taylor_gradients, prune_model
 
@@ -104,11 +125,13 @@ def build_parser():
     parser.add_argument("--calibration-split", dest="calibration_split", type=str, choices=["train", "test"], default="train", help="Dataset split for Taylor calibration")
     parser.add_argument("--calibration-seed", dest="calibration_seed", type=int, default=None, help="Optional DataLoader shuffle seed for Taylor calibration")
     parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print target shape changes after pruning")
-    parser.add_argument("--importance", dest="importance", type=str, choices=["taylor", "activation_taylor", "gate_taylor"], default="taylor", help="Taylor importance variant for the sweep")
+    parser.add_argument("--importance", dest="importance", type=str, choices=["taylor", "activation_taylor", "gate_taylor", "head_gate_taylor"], default="taylor", help="Taylor importance variant for the sweep")
     parser.add_argument("--activation-taylor-reduction", dest="activation_taylor_reduction", type=str, choices=["sum_abs", "abs_sum"], default="sum_abs", help="Reduction for activation_taylor scores")
     parser.add_argument("--gate-taylor-reduction", dest="gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for gate_taylor scores")
     parser.add_argument("--gate-taylor-location", dest="gate_taylor_location", type=str, default="fc1_out", help="Gate insertion point for gate_taylor")
     parser.add_argument("--gate-taylor-aggregation", dest="gate_taylor_aggregation", type=str, choices=["elementwise", "samplewise", "channelwise", "tokenwise"], default="elementwise", help="Aggregation unit for gate_taylor scores")
+    parser.add_argument("--head-gate-taylor-reduction", dest="head_gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for head_gate_taylor scores")
+    parser.add_argument("--head-gate-taylor-aggregation", dest="head_gate_taylor_aggregation", type=str, choices=["elementwise", "samplewise", "channelwise", "tokenwise"], default="samplewise", help="Aggregation unit for head_gate_taylor scores")
     return parser
 
 
@@ -203,6 +226,16 @@ def reset_results(path, args, trials, layers, calibration_config, baseline_metri
             "gate_taylor_aggregation": (
                 args.gate_taylor_aggregation if args.importance == "gate_taylor" else None
             ),
+            "head_gate_taylor_reduction": (
+                args.head_gate_taylor_reduction
+                if args.importance == "head_gate_taylor"
+                else None
+            ),
+            "head_gate_taylor_aggregation": (
+                args.head_gate_taylor_aggregation
+                if args.importance == "head_gate_taylor"
+                else None
+            ),
             "trials": trials,
             "target_layers": layers,
             "calibration": calibration_config,
@@ -239,6 +272,16 @@ def make_result_row(source, args, layer_idx, trial, metrics, artifact=None, path
         ),
         "gate_taylor_aggregation": (
             args.gate_taylor_aggregation if args.importance == "gate_taylor" else None
+        ),
+        "head_gate_taylor_reduction": (
+            args.head_gate_taylor_reduction
+            if args.importance == "head_gate_taylor"
+            else None
+        ),
+        "head_gate_taylor_aggregation": (
+            args.head_gate_taylor_aggregation
+            if args.importance == "head_gate_taylor"
+            else None
         ),
     }
     pruning_stats = {
@@ -336,16 +379,25 @@ def run_pruned_trial(
     base_model,
     gradients,
     mlp_taylor_scores,
+    head_taylor_scores,
     layer_idx,
     trial,
     eval_loader,
 ):
-    """Run one independent (layer, ratio) pruning and evaluation trial."""
+    """Run one independent (layer, ratio/count) pruning and evaluation trial.
+
+    This function is deliberately stateless with respect to pruning: it starts
+    by deepcopying base_model, then restores whichever calibration snapshot was
+    computed once in main(). For head_gate_taylor, that snapshot is a
+    block-indexed set of head scores, restored onto the copied model's qkv
+    modules before prune_model() selects and removes heads in the target layer.
+    """
 
     ratio = trial["ratio"]
     trial_model = copy.deepcopy(base_model)
     existing_activation_taylor_scores = None
     existing_gate_taylor_scores = None
+    existing_head_gate_taylor_scores = None
     if args.importance == "activation_taylor":
         existing_activation_taylor_scores = restore_mlp_taylor_scores(
             trial_model,
@@ -355,6 +407,14 @@ def run_pruned_trial(
         existing_gate_taylor_scores = restore_mlp_taylor_scores(
             trial_model,
             mlp_taylor_scores,
+        )
+    elif args.importance == "head_gate_taylor":
+        # The score cache is keyed by block index between trials. The copied
+        # trial model has fresh qkv module objects, so restore_head_taylor_scores
+        # remaps block-indexed scores onto those new modules.
+        existing_head_gate_taylor_scores = restore_head_taylor_scores(
+            trial_model,
+            head_taylor_scores,
         )
     else:
         restore_gradients(trial_model, gradients)
@@ -377,11 +437,14 @@ def run_pruned_trial(
         gate_taylor_reduction=args.gate_taylor_reduction,
         gate_taylor_location=args.gate_taylor_location,
         gate_taylor_aggregation=args.gate_taylor_aggregation,
+        head_gate_taylor_reduction=args.head_gate_taylor_reduction,
+        head_gate_taylor_aggregation=args.head_gate_taylor_aggregation,
         inspect_groups=args.inspect_groups,
         use_existing_taylor_gradients=True,
         existing_calibration_config=args.calibration_config,
         existing_activation_taylor_scores=existing_activation_taylor_scores,
         existing_gate_taylor_scores=existing_gate_taylor_scores,
+        existing_head_gate_taylor_scores=existing_head_gate_taylor_scores,
         save_artifact=args.save_artifacts,
         verbose=False,
         device=DEVICE,
@@ -421,9 +484,11 @@ def main(args):
     baseline_metrics = evaluate_classifier(base_model, eval_loader, DEVICE, args.max_batches)
     print(f"[Sensitivity] reference baseline acc={baseline_metrics['acc']:.2f}%")
 
-    # Taylor calibration is the expensive part. Run it once on the unpruned
-    # model, then restore the same score snapshot for every independent trial.
+    # Calibration is the expensive part. Run it once on the unpruned model, then
+    # restore the same signal for every independent trial. This keeps layer-wise
+    # sensitivity comparable: only the target layer/count changes across rows.
     mlp_taylor_collector = None
+    head_taylor_collector = None
     if args.importance in {"activation_taylor", "gate_taylor"}:
         if _normalize_pruning_modules_for_sensitivity(args.pruning_modules) != ("mlp",):
             raise ValueError(
@@ -443,6 +508,21 @@ def main(args):
                 gate_location=args.gate_taylor_location,
                 aggregation=args.gate_taylor_aggregation,
             )
+    if args.importance == "head_gate_taylor":
+        if _normalize_pruning_modules_for_sensitivity(args.pruning_modules) != ("head",):
+            raise ValueError(
+                "head_gate_taylor sensitivity currently supports "
+                "pruning_modules='head' only."
+            )
+        # Head scores are measured at attn.proj input. The collector does not
+        # prune anything; it only accumulates a [num_heads] importance vector per
+        # selected block during the calibration backward passes below.
+        head_taylor_collector = AttentionHeadGateTaylorCollector(
+            model=base_model,
+            target_block_indices=layers,
+            reduction=args.head_gate_taylor_reduction,
+            aggregation=args.head_gate_taylor_aggregation,
+        )
     try:
         args.calibration_config = compute_taylor_gradients(
             model=base_model,
@@ -460,10 +540,13 @@ def main(args):
             gate_taylor_collector=(
                 mlp_taylor_collector if args.importance == "gate_taylor" else None
             ),
+            head_gate_taylor_collector=head_taylor_collector,
         )
     except Exception:
         if mlp_taylor_collector is not None:
             mlp_taylor_collector.remove()
+        if head_taylor_collector is not None:
+            head_taylor_collector.remove()
         raise
     if args.importance in {"activation_taylor", "gate_taylor"}:
         mlp_taylor_scores = capture_mlp_taylor_scores(
@@ -476,14 +559,33 @@ def main(args):
             raise ValueError(
                 f"{args.importance} calibration completed, but no MLP scores were found."
             )
+        head_taylor_scores = {}
+    elif args.importance == "head_gate_taylor":
+        # Store scores by block index, not by module object. Trial models are
+        # deep copies, so module-keyed scores from base_model would not match
+        # their qkv modules directly.
+        head_taylor_scores = capture_head_taylor_scores(
+            base_model,
+            head_taylor_collector.final_scores(),
+        )
+        head_taylor_collector.remove()
+        gradients = {}
+        mlp_taylor_scores = {}
+        if not head_taylor_scores:
+            raise ValueError(
+                "head_gate_taylor calibration completed, but no head scores were found."
+            )
     else:
         gradients = capture_gradients(base_model)
         mlp_taylor_scores = {}
+        head_taylor_scores = {}
         if not gradients:
             raise ValueError("Taylor calibration completed, but no parameter gradients were found.")
     print(f"[Sensitivity] calibration={args.calibration_config}")
     if args.importance in {"activation_taylor", "gate_taylor"}:
         print(f"[Sensitivity] MLP score tensors={len(mlp_taylor_scores)}")
+    elif args.importance == "head_gate_taylor":
+        print(f"[Sensitivity] head score tensors={len(head_taylor_scores)}")
     else:
         print(f"[Sensitivity] gradient tensors={len(gradients)}")
 
@@ -507,6 +609,7 @@ def main(args):
             base_model,
             gradients,
             mlp_taylor_scores,
+            head_taylor_scores,
             layer_idx,
             trial,
             eval_loader,
