@@ -11,7 +11,13 @@ import torch.nn.functional as F
 import torch_pruning as tp
 
 from datasets import get_loader
+from pruning.head_pruning import (
+    prune_selected_attention_heads,
+    select_attention_heads_by_score,
+)
+from pruning.head_taylor_cache import capture_head_taylor_scores
 from pruning.importance import (
+    AttentionHeadGateTaylorCollector,
     MLPActivationTaylorCollector,
     MLPActivationTaylorImportance,
     MLPGateTaylorCollector,
@@ -19,6 +25,7 @@ from pruning.importance import (
     VALID_GATE_TAYLOR_AGGREGATIONS,
     VALID_GATE_TAYLOR_REDUCTIONS,
     VALID_GATE_TAYLOR_LOCATIONS,
+    VALID_HEAD_GATE_TAYLOR_LOCATIONS,
 )
 from utils import move_to_device
 
@@ -325,6 +332,7 @@ def compute_taylor_gradients(
     feature_dim_mask=None,
     feature_dim_mask_metadata=None,
     calibration_loss_fn=None,
+    head_gate_taylor_collector=None,
 ):
     """Run supervised batches so Taylor pruning criteria can read gradients."""
 
@@ -414,6 +422,8 @@ def compute_taylor_gradients(
             activation_taylor_collector.accumulate_batch()
         if gate_taylor_collector is not None:
             gate_taylor_collector.accumulate_batch()
+        if head_gate_taylor_collector is not None:
+            head_gate_taylor_collector.accumulate_batch()
 
         processed_batches += 1
         total_examples += labels.size(0)
@@ -446,6 +456,19 @@ def compute_taylor_gradients(
         calibration_config["gate_taylor_location"] = gate_taylor_collector.gate_location
         calibration_config["gate_taylor_aggregation"] = gate_taylor_collector.aggregation
         calibration_config["gate_taylor_score_mode"] = gate_taylor_collector.score_mode
+    if head_gate_taylor_collector is not None:
+        calibration_config["head_gate_taylor_reduction"] = (
+            head_gate_taylor_collector.reduction
+        )
+        calibration_config["head_gate_taylor_location"] = (
+            head_gate_taylor_collector.gate_location
+        )
+        calibration_config["head_gate_taylor_aggregation"] = (
+            head_gate_taylor_collector.aggregation
+        )
+        calibration_config["head_gate_taylor_score_mode"] = (
+            head_gate_taylor_collector.score_mode
+        )
     return calibration_config
 
 
@@ -475,6 +498,32 @@ def _collect_attention_metadata(model, target_block_indices=None):
             continue
         metadata[f"blocks.{block_idx}.attn"] = _attention_metadata(block)
     return metadata
+
+
+def _head_scores_for_selection(model, module_keyed_scores, target_block_indices=None):
+    """Convert qkv-keyed head scores to block-index scores for selection."""
+
+    block_scores = capture_head_taylor_scores(model, module_keyed_scores)
+    if target_block_indices is None:
+        if not block_scores:
+            raise ValueError("Head gate Taylor scoring produced no attention-head scores.")
+        return block_scores
+
+    selected_scores = {}
+    missing_blocks = []
+    for block_idx in target_block_indices:
+        block_idx = int(block_idx)
+        score = block_scores.get(block_idx)
+        if score is None:
+            missing_blocks.append(block_idx)
+            continue
+        selected_scores[block_idx] = score
+    if missing_blocks:
+        raise ValueError(
+            "Head gate Taylor scores are missing target blocks: "
+            f"{missing_blocks}."
+        )
+    return selected_scores
 
 
 def _collect_target_shapes(model, pruning_modules, target_block_indices=None):
@@ -673,6 +722,10 @@ def _build_pruning_artifact(
     gate_taylor_reduction,
     gate_taylor_location,
     gate_taylor_aggregation,
+    head_gate_taylor_reduction,
+    head_gate_taylor_location,
+    head_gate_taylor_aggregation,
+    head_pruning_root,
     base_macs,
     base_params,
     pruned_macs,
@@ -681,6 +734,8 @@ def _build_pruning_artifact(
     target_pruning_summary,
     attention_metadata_before=None,
     attention_metadata_after=None,
+    selected_attention_heads=None,
+    direct_head_pruning_metadata=None,
 ):
     """Package the pruned model and pruning statistics into a serializable artifact."""
 
@@ -704,6 +759,10 @@ def _build_pruning_artifact(
             "gate_taylor_reduction": gate_taylor_reduction,
             "gate_taylor_location": gate_taylor_location,
             "gate_taylor_aggregation": gate_taylor_aggregation,
+            "head_gate_taylor_reduction": head_gate_taylor_reduction,
+            "head_gate_taylor_location": head_gate_taylor_location,
+            "head_gate_taylor_aggregation": head_gate_taylor_aggregation,
+            "head_pruning_root": head_pruning_root,
             "calibration": calibration_config,
         },
         "pruning_stats": {
@@ -715,6 +774,8 @@ def _build_pruning_artifact(
             "target_pruning_summary": target_pruning_summary,
             "attention_metadata_before": attention_metadata_before,
             "attention_metadata_after": attention_metadata_after,
+            "selected_attention_heads": selected_attention_heads,
+            "direct_head_pruning_metadata": direct_head_pruning_metadata,
         },
     }
 
@@ -741,6 +802,10 @@ def prune_model(
     gate_taylor_reduction="sum_abs",
     gate_taylor_location="fc1_out",
     gate_taylor_aggregation="elementwise",
+    head_gate_taylor_reduction="sum_abs",
+    head_gate_taylor_location="proj_in",
+    head_gate_taylor_aggregation="samplewise",
+    head_pruning_root="proj_in",
     calibration_objective="ce",
     feature_dim_mask=None,
     feature_dim_mask_metadata=None,
@@ -751,6 +816,7 @@ def prune_model(
     existing_calibration_config=None,
     existing_activation_taylor_scores=None,
     existing_gate_taylor_scores=None,
+    existing_head_gate_taylor_scores=None,
     save_artifact=True,
     verbose=True,
     device="cpu",
@@ -762,6 +828,13 @@ def prune_model(
     parameter.grad or activation scores and want to avoid repeated calibration.
     save_artifact=False is useful for sensitivity sweeps that only need metrics.
     verbose=False suppresses per-trial logs during large sweeps.
+
+    Two pruning styles live here:
+    - Torch-Pruning ranked pruning for magnitude/taylor/MLP activation/gate
+      Taylor. BasePruner owns both ranking and structural deletion.
+    - Direct head_gate_taylor pruning. The project computes head scores and
+      selects concrete head ids itself, then uses Torch-Pruning's
+      DependencyGraph only to remove the matching qkv/proj slices safely.
     """
 
     model = model.to(device)
@@ -798,10 +871,15 @@ def prune_model(
     base_macs, base_params = _count_ops_and_params(model, example_inputs)
     calibration_config = None
     importance_type = (importance or "magnitude").strip().lower()
-    importance_group_reduction = "mean"
-    importance_normalizer = None if importance_type == "gate_taylor" else "mean"
+    importance_group_reduction = None if importance_type == "head_gate_taylor" else "mean"
+    importance_normalizer = (
+        None if importance_type in {"gate_taylor", "head_gate_taylor"} else "mean"
+    )
     activation_taylor_scores = None
     gate_taylor_scores = None
+    head_gate_taylor_scores = None
+    direct_head_pruning_metadata = None
+    selected_attention_heads = None
     if importance_type == "activation_taylor":
         if activation_taylor_reduction not in VALID_ACTIVATION_TAYLOR_REDUCTIONS:
             raise ValueError(
@@ -846,66 +924,82 @@ def prune_model(
         gate_taylor_scores = (
             {} if existing_gate_taylor_scores is None else existing_gate_taylor_scores
         )
-    if normalized_modules:
-        # The pruner builds the dependency graph and decides which channel groups
-        # can be removed together. The importance object only decides the ranking.
-        pruner, importance_type = _build_pruner(
-            model=model,
-            example_inputs=example_inputs,
-            importance=importance,
-            pruning_ratio=pruning_ratio,
-            pruning_modules=normalized_modules,
-            target_block_indices=normalized_target_block_indices,
-            iterative_steps=iterative_steps,
-            global_pruning=global_pruning,
-            round_to=round_to,
-            activation_taylor_scores=activation_taylor_scores,
-            gate_taylor_scores=gate_taylor_scores,
+    if importance_type == "head_gate_taylor":
+        if head_gate_taylor_reduction not in VALID_GATE_TAYLOR_REDUCTIONS:
+            raise ValueError(
+                "head_gate_taylor reduction must be one of "
+                f"{sorted(VALID_GATE_TAYLOR_REDUCTIONS)}, "
+                f"got {head_gate_taylor_reduction!r}."
+            )
+        if head_gate_taylor_location not in VALID_HEAD_GATE_TAYLOR_LOCATIONS:
+            raise ValueError(
+                "head_gate_taylor_location must be one of "
+                f"{sorted(VALID_HEAD_GATE_TAYLOR_LOCATIONS)}, "
+                f"got {head_gate_taylor_location!r}."
+            )
+        if head_gate_taylor_aggregation not in VALID_GATE_TAYLOR_AGGREGATIONS:
+            raise ValueError(
+                "head_gate_taylor_aggregation must be one of "
+                f"{sorted(VALID_GATE_TAYLOR_AGGREGATIONS)}, "
+                f"got {head_gate_taylor_aggregation!r}."
+            )
+        if head_pruning_root not in {"proj_in", "qkv_out"}:
+            raise ValueError(
+                "head_pruning_root must be one of ['proj_in', 'qkv_out'], "
+                f"got {head_pruning_root!r}."
+            )
+        if normalized_modules != ("head",):
+            raise ValueError(
+                "head_gate_taylor currently supports pruning_modules='head' only."
+            )
+        head_gate_taylor_scores = (
+            {}
+            if existing_head_gate_taylor_scores is None
+            else existing_head_gate_taylor_scores
         )
-        if importance_type in {"taylor", "activation_taylor", "gate_taylor"}:
-            # Taylor scores are based on weight * gradient, so run calibration
-            # backward passes before pruner.step() asks for channel scores.
+    if normalized_modules:
+        if importance_type == "head_gate_taylor":
+            # Direct attention-head path:
+            # 1. Obtain qkv-keyed [num_heads] scores, either from calibration
+            #    below or from an existing snapshot supplied by a sweep.
+            # 2. Convert module-keyed scores to block-indexed scores so the
+            #    target layer can be selected on copied trial models.
+            # 3. Pick the lowest-scoring head ids.
+            # 4. Apply dependency-aware structural deletion.
+            #
+            # This branch intentionally bypasses BasePruner.step(): the score
+            # unit is a whole attention head, not an arbitrary channel group.
             if iterative_steps != 1:
                 raise ValueError(
-                    "Taylor pruning currently supports iterative_steps=1. "
-                    "For iterative Taylor pruning, recompute gradients before each step."
+                    "Head gate Taylor pruning currently supports iterative_steps=1. "
+                    "For iterative pruning, recompute head scores before each step."
                 )
             if use_existing_taylor_gradients:
-                # The caller is responsible for restoring parameter.grad before
-                # prune_model is called, or for passing activation scores.
+                # Sensitivity sweeps calibrate once on the dense model, then
+                # restore the same head scores on every trial model. In that
+                # mode this branch should not run the data loader again.
                 if existing_calibration_config is None:
                     raise ValueError(
                         "existing_calibration_config is required when "
                         "use_existing_taylor_gradients=True."
                     )
-                if importance_type == "activation_taylor" and not activation_taylor_scores:
+                if not head_gate_taylor_scores:
                     raise ValueError(
-                        "existing_activation_taylor_scores is required when "
-                        "activation_taylor uses existing calibration."
-                    )
-                if importance_type == "gate_taylor" and not gate_taylor_scores:
-                    raise ValueError(
-                        "existing_gate_taylor_scores is required when "
-                        "gate_taylor uses existing calibration."
+                        "existing_head_gate_taylor_scores is required when "
+                        "head_gate_taylor uses existing calibration."
                     )
                 calibration_config = existing_calibration_config
             else:
-                activation_taylor_collector = None
-                gate_taylor_collector = None
-                if importance_type == "activation_taylor":
-                    activation_taylor_collector = MLPActivationTaylorCollector(
-                        model=model,
-                        target_block_indices=normalized_target_block_indices,
-                        reduction=activation_taylor_reduction,
-                    )
-                if importance_type == "gate_taylor":
-                    gate_taylor_collector = MLPGateTaylorCollector(
-                        model=model,
-                        target_block_indices=normalized_target_block_indices,
-                        reduction=gate_taylor_reduction,
-                        gate_location=gate_taylor_location,
-                        aggregation=gate_taylor_aggregation,
-                    )
+                # One-shot pruning path: attach temporary gates to attn.proj
+                # inputs, run calibration backward passes, and collect one score
+                # per head in each selected block.
+                head_gate_taylor_collector = AttentionHeadGateTaylorCollector(
+                    model=model,
+                    target_block_indices=normalized_target_block_indices,
+                    reduction=head_gate_taylor_reduction,
+                    gate_location=head_gate_taylor_location,
+                    aggregation=head_gate_taylor_aggregation,
+                )
                 try:
                     calibration_config = compute_taylor_gradients(
                         model=model,
@@ -917,31 +1011,133 @@ def prune_model(
                         data_root=data_root,
                         device=device,
                         calibration_seed=calibration_seed,
-                        activation_taylor_collector=activation_taylor_collector,
-                        gate_taylor_collector=gate_taylor_collector,
                         calibration_objective=calibration_objective,
                         feature_dim_mask=feature_dim_mask,
                         feature_dim_mask_metadata=feature_dim_mask_metadata,
+                        head_gate_taylor_collector=head_gate_taylor_collector,
                     )
-                    if activation_taylor_collector is not None:
-                        activation_taylor_scores.update(
-                            activation_taylor_collector.final_scores()
-                        )
-                    if gate_taylor_collector is not None:
-                        gate_taylor_scores.update(gate_taylor_collector.final_scores())
+                    head_gate_taylor_scores.update(
+                        head_gate_taylor_collector.final_scores()
+                    )
                 finally:
-                    if activation_taylor_collector is not None:
-                        activation_taylor_collector.remove()
-                    if gate_taylor_collector is not None:
-                        gate_taylor_collector.remove()
-        history_before = len(pruner.pruning_history())
-        pruner.step()
-        num_pruned_groups = len(pruner.pruning_history()) - history_before
-        _refresh_attention_metadata(
-            model,
-            attention_metadata_before=attention_metadata_before,
-            pruning_modules=normalized_modules,
-        )
+                    head_gate_taylor_collector.remove()
+
+            block_head_scores = _head_scores_for_selection(
+                model,
+                head_gate_taylor_scores,
+                normalized_target_block_indices,
+            )
+            # select_attention_heads_by_score returns explicit ids, e.g.
+            # {11: [0, 2, 5]}. These ids are stored in the artifact so later
+            # analysis can inspect exactly which heads were removed.
+            selected_attention_heads = select_attention_heads_by_score(
+                block_head_scores,
+                pruning_ratio=pruning_ratio,
+                global_pruning=global_pruning,
+            )
+            direct_head_pruning_metadata = prune_selected_attention_heads(
+                model=model,
+                example_inputs=example_inputs,
+                selected_heads=selected_attention_heads,
+                root=head_pruning_root,
+            )
+            num_pruned_groups = direct_head_pruning_metadata["num_pruned_heads"]
+        else:
+            # The pruner builds the dependency graph and decides which channel groups
+            # can be removed together. The importance object only decides the ranking.
+            pruner, importance_type = _build_pruner(
+                model=model,
+                example_inputs=example_inputs,
+                importance=importance,
+                pruning_ratio=pruning_ratio,
+                pruning_modules=normalized_modules,
+                target_block_indices=normalized_target_block_indices,
+                iterative_steps=iterative_steps,
+                global_pruning=global_pruning,
+                round_to=round_to,
+                activation_taylor_scores=activation_taylor_scores,
+                gate_taylor_scores=gate_taylor_scores,
+            )
+            if importance_type in {"taylor", "activation_taylor", "gate_taylor"}:
+                # Taylor scores are based on weight * gradient, so run calibration
+                # backward passes before pruner.step() asks for channel scores.
+                if iterative_steps != 1:
+                    raise ValueError(
+                        "Taylor pruning currently supports iterative_steps=1. "
+                        "For iterative Taylor pruning, recompute gradients before each step."
+                    )
+                if use_existing_taylor_gradients:
+                    # The caller is responsible for restoring parameter.grad before
+                    # prune_model is called, or for passing activation scores.
+                    if existing_calibration_config is None:
+                        raise ValueError(
+                            "existing_calibration_config is required when "
+                            "use_existing_taylor_gradients=True."
+                        )
+                    if importance_type == "activation_taylor" and not activation_taylor_scores:
+                        raise ValueError(
+                            "existing_activation_taylor_scores is required when "
+                            "activation_taylor uses existing calibration."
+                        )
+                    if importance_type == "gate_taylor" and not gate_taylor_scores:
+                        raise ValueError(
+                            "existing_gate_taylor_scores is required when "
+                            "gate_taylor uses existing calibration."
+                        )
+                    calibration_config = existing_calibration_config
+                else:
+                    activation_taylor_collector = None
+                    gate_taylor_collector = None
+                    if importance_type == "activation_taylor":
+                        activation_taylor_collector = MLPActivationTaylorCollector(
+                            model=model,
+                            target_block_indices=normalized_target_block_indices,
+                            reduction=activation_taylor_reduction,
+                        )
+                    if importance_type == "gate_taylor":
+                        gate_taylor_collector = MLPGateTaylorCollector(
+                            model=model,
+                            target_block_indices=normalized_target_block_indices,
+                            reduction=gate_taylor_reduction,
+                            gate_location=gate_taylor_location,
+                            aggregation=gate_taylor_aggregation,
+                        )
+                    try:
+                        calibration_config = compute_taylor_gradients(
+                            model=model,
+                            calibration_dataset=calibration_dataset,
+                            calibration_batch_size=calibration_batch_size,
+                            calibration_batches=calibration_batches,
+                            calibration_split=calibration_split,
+                            num_workers=num_workers,
+                            data_root=data_root,
+                            device=device,
+                            calibration_seed=calibration_seed,
+                            activation_taylor_collector=activation_taylor_collector,
+                            gate_taylor_collector=gate_taylor_collector,
+                            calibration_objective=calibration_objective,
+                            feature_dim_mask=feature_dim_mask,
+                            feature_dim_mask_metadata=feature_dim_mask_metadata,
+                        )
+                        if activation_taylor_collector is not None:
+                            activation_taylor_scores.update(
+                                activation_taylor_collector.final_scores()
+                            )
+                        if gate_taylor_collector is not None:
+                            gate_taylor_scores.update(gate_taylor_collector.final_scores())
+                    finally:
+                        if activation_taylor_collector is not None:
+                            activation_taylor_collector.remove()
+                        if gate_taylor_collector is not None:
+                            gate_taylor_collector.remove()
+            history_before = len(pruner.pruning_history())
+            pruner.step()
+            num_pruned_groups = len(pruner.pruning_history()) - history_before
+            _refresh_attention_metadata(
+                model,
+                attention_metadata_before=attention_metadata_before,
+                pruning_modules=normalized_modules,
+            )
     else:
         # No module was explicitly selected, so leave the model unchanged.
         num_pruned_groups = 0
@@ -988,6 +1184,16 @@ def prune_model(
         gate_taylor_aggregation=(
             gate_taylor_aggregation if importance_type == "gate_taylor" else None
         ),
+        head_gate_taylor_reduction=(
+            head_gate_taylor_reduction if importance_type == "head_gate_taylor" else None
+        ),
+        head_gate_taylor_location=(
+            head_gate_taylor_location if importance_type == "head_gate_taylor" else None
+        ),
+        head_gate_taylor_aggregation=(
+            head_gate_taylor_aggregation if importance_type == "head_gate_taylor" else None
+        ),
+        head_pruning_root=head_pruning_root if importance_type == "head_gate_taylor" else None,
         base_macs=base_macs,
         base_params=base_params,
         pruned_macs=pruned_macs,
@@ -996,6 +1202,8 @@ def prune_model(
         target_pruning_summary=target_pruning_summary,
         attention_metadata_before=attention_metadata_before,
         attention_metadata_after=attention_metadata_after,
+        selected_attention_heads=selected_attention_heads,
+        direct_head_pruning_metadata=direct_head_pruning_metadata,
     )
 
     if output_path is None:

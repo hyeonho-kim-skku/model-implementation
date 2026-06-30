@@ -33,11 +33,13 @@ def build_parser():
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True, help="Load pretrained timm weights for source_type=timm")
     parser.add_argument("--output-dir", dest="output_dir", type=str, default="./pruned", help="Directory to save pruned artifacts")
     parser.add_argument("--output-path", dest="output_path", type=str, default=None, help="Optional full path for the pruned artifact")
-    parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor", "activation_taylor", "gate_taylor"], default="magnitude", help="Importance criterion for structured pruning")
+    parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor", "activation_taylor", "gate_taylor", "head_gate_taylor"], default="magnitude", help="Importance criterion for structured pruning")
     parser.add_argument("--activation-taylor-reduction", dest="activation_taylor_reduction", type=str, choices=["sum_abs", "abs_sum"], default="sum_abs", help="Reduction for activation_taylor scores")
     parser.add_argument("--gate-taylor-reduction", dest="gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for gate_taylor scores")
     parser.add_argument("--gate-taylor-location", dest="gate_taylor_location", type=str, default="fc1_out", help="Gate insertion point for gate_taylor")
     parser.add_argument("--gate-taylor-aggregation", dest="gate_taylor_aggregation", type=str, choices=["elementwise", "samplewise", "channelwise", "tokenwise"], default="elementwise", help="Aggregation unit for gate_taylor scores")
+    parser.add_argument("--head-gate-taylor-reduction", dest="head_gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for head_gate_taylor scores")
+    parser.add_argument("--head-gate-taylor-aggregation", dest="head_gate_taylor_aggregation", type=str, choices=["elementwise", "samplewise", "channelwise", "tokenwise"], default="samplewise", help="Aggregation unit for head_gate_taylor scores")
     parser.add_argument("--pruning-ratio", dest="pruning_ratio", type=float, default=0.2, help="Structured pruning ratio")
     parser.add_argument("--pruning-modules", dest="pruning_modules", type=str, default=None, help="Comma-separated pruning targets: head,mlp")
     parser.add_argument("--target-block-indices", dest="target_block_indices", type=str, default=None, help="Optional comma-separated transformer block indices to prune")
@@ -80,6 +82,8 @@ def main(args):
         gate_taylor_reduction=args.gate_taylor_reduction,
         gate_taylor_location=args.gate_taylor_location,
         gate_taylor_aggregation=args.gate_taylor_aggregation,
+        head_gate_taylor_reduction=args.head_gate_taylor_reduction,
+        head_gate_taylor_aggregation=args.head_gate_taylor_aggregation,
         num_workers=args.num_workers,
         data_root=args.data_root,
         inspect_groups=args.inspect_groups,
