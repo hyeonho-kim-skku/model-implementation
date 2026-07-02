@@ -8,6 +8,7 @@ Inputs are results.jsonl files from sensitivity_taylor.py with:
 
 The script writes three analysis artifacts:
   - <dataset>_head_gate_taylor_sensitivity_heatmap.png
+  - all_datasets_head_gate_taylor_sensitivity_heatmaps.png
   - safe_budgets.csv
   - summary.csv
 
@@ -213,6 +214,63 @@ def plot_dataset_heatmap(frame, dataset, output_dir, dpi):
     return output_path
 
 
+def plot_composite_heatmaps(frame, output_dir, dpi):
+    """Plot all four dataset heatmaps in one slide-friendly figure.
+
+    This composite version keeps compact cell annotations so the figure can be
+    used as a standalone sensitivity slide.
+    """
+    vmin = min(0.0, float(frame["acc_drop"].min()))
+    vmax = max(0.1, float(frame["acc_drop"].max()))
+
+    fig, axes = plt.subplots(2, 2, figsize=(25.0, 14.2), sharex=True, sharey=True)
+    cbar_ax = fig.add_axes([0.925, 0.18, 0.014, 0.64])
+    axes_flat = axes.ravel()
+
+    for idx, dataset in enumerate(DATASETS):
+        ax = axes_flat[idx]
+        dataset_frame = frame[frame["dataset"] == dataset]
+        table = dataset_frame.pivot(
+            index="layer_idx",
+            columns="pruned_head_count",
+            values="acc_drop",
+        )
+        table = table.sort_index().reindex(sorted(table.columns), axis=1)
+        sns.heatmap(
+            table,
+            ax=ax,
+            cmap="magma",
+            vmin=vmin,
+            vmax=vmax,
+            annot=True,
+            fmt=".2f",
+            annot_kws={"fontsize": 13.0},
+            linewidths=0.25,
+            linecolor="white",
+            cbar=idx == 0,
+            cbar_ax=cbar_ax if idx == 0 else None,
+            cbar_kws={"label": "Accuracy drop (%p)"},
+        )
+        ax.set_title(dataset_label(dataset), fontsize=20, weight="bold", pad=12)
+        ax.set_xlabel("Pruned heads in one block" if idx >= 2 else "", fontsize=18)
+        ax.set_ylabel("Transformer block" if idx % 2 == 0 else "", fontsize=18)
+        ax.tick_params(axis="both", labelsize=15)
+
+    fig.suptitle(
+        "Layer-wise Attention Head Sensitivity (Head Gate Taylor, sum_abs)",
+        fontsize=28,
+        weight="bold",
+        y=0.965,
+    )
+    cbar_ax.yaxis.label.set_size(18)
+    cbar_ax.tick_params(labelsize=16)
+    fig.subplots_adjust(left=0.06, right=0.90, bottom=0.08, top=0.91, hspace=0.25, wspace=0.12)
+    output_path = output_dir / "all_datasets_head_gate_taylor_sensitivity_heatmaps.png"
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
 def conservative_safe_budget(layer_frame, threshold):
     budget = 0
     for pruned_head_count in sorted(layer_frame["pruned_head_count"].unique()):
@@ -295,6 +353,9 @@ def main(args):
     for dataset in DATASETS:
         output_path = plot_dataset_heatmap(frame, dataset, output_dir, args.dpi)
         print(f"[HeadGateTaylorSensitivity] saved {output_path}")
+
+    output_path = plot_composite_heatmaps(frame, output_dir, args.dpi)
+    print(f"[HeadGateTaylorSensitivity] saved {output_path}")
 
 
 if __name__ == "__main__":
