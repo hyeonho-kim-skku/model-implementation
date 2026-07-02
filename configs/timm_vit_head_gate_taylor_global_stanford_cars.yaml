@@ -1,0 +1,28 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_stanford_cars_supervised/0523-205731/best_cls_ckpt.pth
+
+dataset: stanford_cars
+calibration_dataset: stanford_cars
+batch_size: 64
+split: test
+num_workers: 4
+max_batches:
+data_root: ./data
+
+ratios: [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14, 0.16, 0.18, 0.2]
+pruning_modules: head
+target_block_indices:
+round_to:
+inspect_groups: false
+
+head_gate_taylor_location: proj_in
+head_gate_taylor_reduction: sum_abs
+head_gate_taylor_aggregation: samplewise
+head_pruning_root: proj_in
+calibration_batch_size: 64
+calibration_batches: full
+calibration_split: train
+calibration_seed: 42
+
+score_cache_path: ./pruned/cache/vit_base_stanford_cars_lora50_head_gate_taylor_proj_in_sum_abs_samplewise_full_scores.pth
+save_artifacts: false
