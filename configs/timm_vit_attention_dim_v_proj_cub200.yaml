@@ -1,0 +1,28 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_cub200_supervised/0512-022506/best_cls_ckpt.pth
+
+dataset: cub200
+calibration_dataset: cub200
+batch_size: 64
+split: test
+num_workers: 4
+max_batches:
+data_root: ./data
+
+ratios: [0.02, 0.04, 0.06, 0.08, 0.1]
+attention_dim_target: v_proj
+target_block_indices:
+global_pruning: true
+min_qk_dim_per_head: 1
+min_v_dim_per_head: 1
+
+attention_dim_reduction: sum_abs
+attention_dim_aggregation: samplewise
+attention_dim_gate_location: proj_in
+calibration_batch_size: 64
+calibration_batches: full
+calibration_split: train
+calibration_seed: 42
+
+score_cache_path: ./pruned/cache/vit_base_cub200_lora50_attention_dim_gate_taylor_v_proj_proj_in_sum_abs_samplewise_full_scores.pth
+save_artifacts: false
