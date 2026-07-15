@@ -5,7 +5,7 @@ import timm
 import torch
 import torch.nn as nn
 
-from .lora import FusedQKVLoRA, LoRAWrappedLinear
+from .lora import FusedQKVLoRA, LoRAWrappedLinear, RaggedFusedQKVLoRA
 
 
 VALID_LORA_MODULES = {"qkv", "proj", "mlp"}
@@ -75,12 +75,22 @@ def inject_lora_into_vit(
         # target_components로 q, k, v 중 원하는 slice에만 LoRA를 더한다.
         if "qkv" in normalized_modules:
             if hasattr(block, "attn") and hasattr(block.attn, "qkv"):
-                block.attn.qkv = FusedQKVLoRA(
-                    qkv=block.attn.qkv,
-                    rank=rank,
-                    alpha=alpha,
-                    target_components=normalized_components,
-                )
+                if getattr(block.attn, "is_ragged_fused_qkv_attention", False):
+                    block.attn.qkv = RaggedFusedQKVLoRA(
+                        qkv=block.attn.qkv,
+                        qk_width=block.attn.qk_width,
+                        v_width=block.attn.v_width,
+                        rank=rank,
+                        alpha=alpha,
+                        target_components=normalized_components,
+                    )
+                else:
+                    block.attn.qkv = FusedQKVLoRA(
+                        qkv=block.attn.qkv,
+                        rank=rank,
+                        alpha=alpha,
+                        target_components=normalized_components,
+                    )
                 injected_module_names.append(f"blocks.{block_idx}.attn.qkv")
 
         # Attention output projection에도 일반 Linear wrapper 방식으로 LoRA를 붙일 수 있다.
@@ -202,6 +212,8 @@ class TIMMLoRA(nn.Module):
         merged_encoder = copy.deepcopy(self.encoder)
         for block in merged_encoder.blocks:
             if isinstance(block.attn.qkv, FusedQKVLoRA):
+                block.attn.qkv = block.attn.qkv.to_merged_linear()
+            if isinstance(block.attn.qkv, RaggedFusedQKVLoRA):
                 block.attn.qkv = block.attn.qkv.to_merged_linear()
             if isinstance(block.attn.proj, LoRAWrappedLinear):
                 block.attn.proj = block.attn.proj.to_merged_linear()

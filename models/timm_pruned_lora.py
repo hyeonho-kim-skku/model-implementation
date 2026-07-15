@@ -4,7 +4,7 @@ import torch.nn as nn
 
 from pruning.eval import load_pruned_artifact
 
-from .lora import FusedQKVLoRA, LoRAWrappedLinear
+from .lora import FusedQKVLoRA, LoRAWrappedLinear, RaggedFusedQKVLoRA
 from .timm_lora import count_parameters, inject_lora_into_vit
 
 
@@ -131,6 +131,8 @@ class TIMMPrunedLoRA(nn.Module):
         merged_encoder = copy.deepcopy(self.model.encoder)
         for block in merged_encoder.blocks:
             if isinstance(block.attn.qkv, FusedQKVLoRA):
+                block.attn.qkv = block.attn.qkv.to_merged_linear()
+            if isinstance(block.attn.qkv, RaggedFusedQKVLoRA):
                 block.attn.qkv = block.attn.qkv.to_merged_linear()
             if isinstance(block.attn.proj, LoRAWrappedLinear):
                 block.attn.proj = block.attn.proj.to_merged_linear()

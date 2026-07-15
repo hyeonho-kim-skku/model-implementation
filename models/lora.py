@@ -164,3 +164,91 @@ class FusedQKVLoRA(nn.Module):
             merged_qkv.weight.data[start:end] += adapter.merged_weight().to(self.qkv.weight.dtype)
 
         return merged_qkv
+
+
+class RaggedFusedQKVLoRA(nn.Module):
+    """LoRA wrapper for RaggedFusedQKVAttention qkv projections."""
+
+    _COMPONENT_INDEX = {
+        "q": 0,
+        "k": 1,
+        "v": 2,
+    }
+
+    def __init__(self, qkv, qk_width, v_width, rank, alpha=None, target_components=("q", "v")):
+        super().__init__()
+        if not isinstance(qkv, nn.Linear):
+            raise TypeError("RaggedFusedQKVLoRA expects an nn.Linear qkv projection.")
+        expected_out = 2 * int(qk_width) + int(v_width)
+        if qkv.out_features != expected_out:
+            raise ValueError(
+                "RaggedFusedQKVLoRA qkv width mismatch: "
+                f"{qkv.out_features} != 2 * {qk_width} + {v_width}."
+            )
+        self.qkv = qkv
+        self.in_features = qkv.in_features
+        self.out_features = qkv.out_features
+        self.qk_width = int(qk_width)
+        self.v_width = int(v_width)
+
+        for parameter in self.qkv.parameters():
+            parameter.requires_grad = False
+
+        normalized_components = []
+        for component in target_components:
+            key = component.lower()
+            if key not in self._COMPONENT_INDEX:
+                raise ValueError(f"Unsupported qkv component: {component}")
+            normalized_components.append(key)
+        self.target_components = tuple(normalized_components)
+        self.adapters = nn.ModuleDict(
+            {
+                component: LoRALinear(
+                    in_features=self.in_features,
+                    out_features=self._component_width(component),
+                    rank=rank,
+                    alpha=alpha,
+                    bias=False,
+                )
+                for component in self.target_components
+            }
+        )
+
+    def _component_width(self, component):
+        if component in {"q", "k"}:
+            return self.qk_width
+        if component == "v":
+            return self.v_width
+        raise ValueError(f"Unsupported qkv component: {component}")
+
+    def _component_range(self, component):
+        if component == "q":
+            return 0, self.qk_width
+        if component == "k":
+            return self.qk_width, 2 * self.qk_width
+        if component == "v":
+            return 2 * self.qk_width, 2 * self.qk_width + self.v_width
+        raise ValueError(f"Unsupported qkv component: {component}")
+
+    def forward(self, x):
+        qkv = self.qkv(x)
+        for component, adapter in self.adapters.items():
+            start, end = self._component_range(component)
+            qkv[..., start:end] = qkv[..., start:end] + adapter(x)
+        return qkv
+
+    def to_merged_linear(self):
+        merged_qkv = nn.Linear(
+            self.qkv.in_features,
+            self.qkv.out_features,
+            bias=self.qkv.bias is not None,
+        )
+        merged_qkv.to(device=self.qkv.weight.device, dtype=self.qkv.weight.dtype)
+        merged_qkv.weight.data.copy_(self.qkv.weight.data)
+        if self.qkv.bias is not None:
+            merged_qkv.bias.data.copy_(self.qkv.bias.data)
+
+        for component, adapter in self.adapters.items():
+            start, end = self._component_range(component)
+            merged_qkv.weight.data[start:end] += adapter.merged_weight().to(self.qkv.weight.dtype)
+        return merged_qkv
