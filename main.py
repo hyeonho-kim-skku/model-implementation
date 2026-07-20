@@ -35,13 +35,33 @@ def _main(args):
         train=True,
         shuffle=True,
         drop_last=True,
+        num_workers=args.num_workers,
+        data_root=args.data_root,
         generator=train_generator,
         worker_init_fn=train_worker_init_fn,
     )
-    testloader = get_loader(args.dataset, args.batch_size, 'test', train=False, shuffle=False, drop_last=False)
+    testloader = get_loader(
+        args.dataset,
+        args.batch_size,
+        'test',
+        train=False,
+        shuffle=False,
+        drop_last=False,
+        num_workers=args.num_workers,
+        data_root=args.data_root,
+    )
     knn_trainloader = None
     if args.mode == 'two_crop' or args.mode == 'multi_crop':
-        knn_trainloader = get_loader(args.dataset, args.batch_size, 'test', train=True, shuffle=False, drop_last=False)
+        knn_trainloader = get_loader(
+            args.dataset,
+            args.batch_size,
+            'test',
+            train=True,
+            shuffle=False,
+            drop_last=False,
+            num_workers=args.num_workers,
+            data_root=args.data_root,
+        )
 
     method = load_method(args.method, model)
     method.to(device)
@@ -85,6 +105,8 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str)
     parser.add_argument('--method', type=str)
     parser.add_argument('--dataset', type=str)
+    parser.add_argument('--data-root', dest='data_root', type=str, default='./data')
+    parser.add_argument('--num-workers', dest='num_workers', type=int, default=4)
     parser.add_argument('--num-epochs', dest='num_epochs', type=int)
     parser.add_argument('--batch-size', dest='batch_size', type=int)
     # parser.add_argument('--criterion', type=str, default='crossentropyloss')

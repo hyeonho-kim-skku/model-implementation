@@ -20,6 +20,7 @@ def evaluate_pruned_model(
     device="cpu",
     num_workers=4,
     max_batches=None,
+    data_root="./data",
 ):
     artifact = load_pruned_artifact(artifact_path, map_location=device)
     model = artifact["model"].to(device)
@@ -34,5 +35,6 @@ def evaluate_pruned_model(
         shuffle=False,
         drop_last=False,
         num_workers=num_workers,
+        data_root=data_root,
     )
     return artifact, evaluate_classifier(model, loader, device, max_batches=max_batches)

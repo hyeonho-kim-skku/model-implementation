@@ -1,3 +1,5 @@
+import os
+
 from torch.utils.data import DataLoader
 import torchvision.datasets as datasets
 from torchvision import transforms
@@ -5,6 +7,15 @@ from torchvision import transforms
 from .cub200 import CUB200Dataset
 
 CONFIG = {
+    'imagenet': {
+        'mean': (0.485, 0.456, 0.406),
+        'std': (0.229, 0.224, 0.225),
+        'size': 224,
+        'class': datasets.ImageFolder,
+        'ssl_params': {
+            'blur_prob': 0.0
+        }
+    },
     'cifar10': {
         'mean' : (0.4914, 0.4822, 0.4465),
         'std' : (0.2470, 0.2435, 0.2616),
@@ -168,6 +179,15 @@ def get_loader(
     if dataset_name == 'flowers102':
         split = 'train' if train else 'test'
         dataset = dataset_class(root=data_root, split=split, download=True, transform=transform)
+    elif dataset_name == 'imagenet':
+        split = 'train' if train else 'val'
+        split_root = os.path.join(data_root, split)
+        if not os.path.isdir(split_root):
+            raise FileNotFoundError(
+                f"ImageNet {split} directory not found: {split_root}. "
+                "Set data_root to the directory containing train/ and val/."
+            )
+        dataset = dataset_class(root=split_root, transform=transform)
     elif dataset_name == 'fgvc_aircraft':
         # Use train+val for training, which is the common FGVC-Aircraft protocol.
         split = 'trainval' if train else 'test'

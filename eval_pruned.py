@@ -16,6 +16,7 @@ def build_parser():
     parser.add_argument("--config", type=str, help="Path to the yaml config file")
     parser.add_argument("--artifact-path", dest="artifact_path", type=str, help="Path to a pruned model artifact")
     parser.add_argument("--dataset", type=str, help="Dataset name")
+    parser.add_argument("--data-root", dest="data_root", type=str, default="./data", help="Dataset root directory")
     parser.add_argument("--batch-size", dest="batch_size", type=int, default=64, help="Evaluation batch size")
     parser.add_argument("--split", type=str, default="test", help="Dataset split to evaluate: train or test")
     parser.add_argument("--num-workers", dest="num_workers", type=int, default=4, help="DataLoader worker count")
@@ -28,6 +29,7 @@ def save_metrics_json(args, artifact, metrics):
     result = {
         "artifact_path": args.artifact_path,
         "dataset": args.dataset,
+        "data_root": args.data_root,
         "split": args.split,
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
@@ -54,6 +56,7 @@ def main(args):
         device=device,
         num_workers=args.num_workers,
         max_batches=args.max_batches,
+        data_root=args.data_root,
     )
     print(f"[PrunedEval] artifact: {args.artifact_path}")
     print(f"[PrunedEval] dataset: {args.dataset} ({args.split})")
