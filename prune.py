@@ -54,6 +54,7 @@ def build_parser():
     parser.add_argument("--calibration-batches", dest="calibration_batches", type=parse_calibration_batches, default=1, help="Number of Taylor calibration batches, or 'full'")
     parser.add_argument("--calibration-split", dest="calibration_split", type=str, choices=["train", "test"], default="train", help="Dataset split for Taylor calibration")
     parser.add_argument("--calibration-seed", dest="calibration_seed", type=int, default=None, help="Optional DataLoader shuffle seed for Taylor calibration")
+    parser.add_argument("--calibration-transform", dest="calibration_transform", choices=["default", "isomorphic_eval"], default="default", help="Calibration preprocessing preset; default preserves the legacy test transform")
     parser.add_argument("--num-workers", dest="num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--data-root", dest="data_root", type=str, default="./data", help="Dataset root directory")
     parser.add_argument("--inspect-groups", dest="inspect_groups", action="store_true", help="Print target shape changes after pruning")
@@ -83,6 +84,7 @@ def main(args):
         calibration_batches=args.calibration_batches,
         calibration_split=args.calibration_split,
         calibration_seed=args.calibration_seed,
+        calibration_transform=args.calibration_transform,
         activation_taylor_reduction=args.activation_taylor_reduction,
         gate_taylor_reduction=args.gate_taylor_reduction,
         gate_taylor_location=args.gate_taylor_location,

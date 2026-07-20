@@ -5,11 +5,39 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from datasets import CONFIG as DATASET_CONFIG
 from datasets import get_loader
 from utils import move_to_device
 
 
 VALID_TAYLOR_CALIBRATION_OBJECTIVES = {"ce", "feature_dim_masked_ce"}
+VALID_CALIBRATION_TRANSFORMS = {"default", "isomorphic_eval"}
+
+
+def _resolve_calibration_transform(calibration_transform):
+    """Return the dataset transform mode and reproducibility metadata."""
+
+    calibration_transform = str(calibration_transform).lower()
+    if calibration_transform not in VALID_CALIBRATION_TRANSFORMS:
+        raise ValueError(
+            "calibration_transform must be one of "
+            f"{sorted(VALID_CALIBRATION_TRANSFORMS)}, got {calibration_transform!r}."
+        )
+    if calibration_transform == "default":
+        return "test", {
+            "preset": "default",
+            "mode": "test",
+            "resize": 256,
+            "interpolation": "bilinear",
+            "crop": "center",
+        }
+    return "isomorphic_eval", {
+        "preset": "isomorphic_eval",
+        "mode": "isomorphic_eval",
+        "resize": 256,
+        "interpolation": "bicubic",
+        "crop": "center",
+    }
 
 
 def _normalize_calibration_batches(calibration_batches):
@@ -37,6 +65,7 @@ def compute_taylor_gradients(
     data_root,
     device,
     calibration_seed=None,
+    calibration_transform="default",
     activation_taylor_collector=None,
     gate_taylor_collector=None,
     calibration_objective="ce",
@@ -67,6 +96,15 @@ def compute_taylor_gradients(
         raise ValueError("feature_dim_mask is required for feature_dim_masked_ce.")
 
     calibration_batches = _normalize_calibration_batches(calibration_batches)
+    transform_mode, transform_metadata = _resolve_calibration_transform(
+        calibration_transform
+    )
+    dataset_config = DATASET_CONFIG.get(calibration_dataset)
+    if dataset_config is not None:
+        transform_metadata["normalize"] = {
+            "mean": tuple(dataset_config["mean"]),
+            "std": tuple(dataset_config["std"]),
+        }
     generator = None
     if calibration_seed is not None:
         generator = torch.Generator()
@@ -75,7 +113,7 @@ def compute_taylor_gradients(
     dataloader = get_loader(
         calibration_dataset,
         calibration_batch_size,
-        mode="test",
+        mode=transform_mode,
         train=(calibration_split == "train"),
         shuffle=(calibration_split == "train"),
         drop_last=False,
@@ -149,7 +187,7 @@ def compute_taylor_gradients(
             calibration_batches if calibration_batches is not None else "full"
         ),
         "split": calibration_split,
-        "transform_mode": "test",
+        "transform": transform_metadata,
         "objective": calibration_objective,
         "loss_reduction": "sum",
         "seed": calibration_seed,

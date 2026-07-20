@@ -158,6 +158,15 @@ def get_transform(dataset_name, mode):
             transforms.CenterCrop(img_size)
         ]
         return transforms.Compose(augmentations + normalize)
+    elif mode == 'isomorphic_eval':
+        # Isomorphic Pruning calibrates on deterministically preprocessed
+        # training images: resize the shorter side to 256 with bicubic
+        # interpolation, then center crop to the model input size.
+        augmentations = [
+            transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.CenterCrop(img_size),
+        ]
+        return transforms.Compose(augmentations + normalize)
 
 def get_loader(
     dataset_name,

@@ -1,0 +1,26 @@
+source_type: timm
+backbone_name: deit_small_patch16_224.fb_in1k
+num_classes: 1000
+img_size: 224
+pretrained: true
+classifier_init: pretrained
+
+importance: joint_gate_taylor
+pruning_modules: mlp,head
+global_pruning: true
+iterative_steps: 1
+mlp_pruning_ratio: 0.4
+head_pruning_ratio: 0.4
+round_to: 8
+
+calibration_dataset: imagenet
+calibration_split: train
+calibration_transform: isomorphic_eval
+calibration_batch_size: 64
+calibration_batches: 100
+calibration_seed: 42
+num_workers: 8
+data_root: /data/imagenet/images
+
+output_dir: ./pruned/timm_deit_small_imagenet_joint_mlp40_head40
+inspect_groups: true
