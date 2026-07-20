@@ -1,0 +1,13 @@
+backbone_name: deit_small_patch16_224.fb_in1k
+pretrained: true
+classifier_init: pretrained
+num_classes: 1000
+img_size: 224
+
+dataset: imagenet
+data_root: /data/imagenet/images
+batch_size: 128
+num_workers: 8
+max_batches:
+
+output_json: ./runs/timm_deit_small_imagenet_baseline/eval_metrics.json

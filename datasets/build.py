@@ -170,9 +170,11 @@ def get_loader(
     data_root='./data',
     generator=None,
     worker_init_fn=None,
+    transform=None,
 ):
     # Transform 생성
-    transform = get_transform(dataset_name, mode)
+    if transform is None:
+        transform = get_transform(dataset_name, mode)
 
     # DataSet 생성
     dataset_class = CONFIG[dataset_name]['class']
