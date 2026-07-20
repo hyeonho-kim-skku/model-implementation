@@ -228,3 +228,6 @@ pretrained_models/
 analysis/features/*.pt
 analysis/features/*.json
 analysis/features/*.jsonl
+
+# Experiment logs
+/logs/

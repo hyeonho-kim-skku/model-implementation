@@ -12,6 +12,7 @@ from .timm_classifier import TIMMClassifier
 from .timm_lora import TIMMLoRA
 from .timm_pruned_linear_probe import TIMMPrunedLinearProbe
 from .timm_pruned_lora import TIMMPrunedLoRA
+from .timm_pruned_vpt import TIMMPrunedVPT
 
 def load_model(**kwargs):
     model = kwargs.get('model')
@@ -83,4 +84,13 @@ def load_model(**kwargs):
             reset_classifier=kwargs.get('reset_classifier', True),
             num_classes=kwargs.get('num_classes'),
             freeze_encoder=kwargs.get('freeze_encoder', True),
+        )
+    elif model == 'timm_pruned_vpt':
+        return TIMMPrunedVPT(
+            artifact_path=kwargs.get('artifact_path'),
+            prompt_mode=kwargs.get('prompt_mode', 'shallow'),
+            num_prompt_tokens=kwargs.get('num_prompt_tokens', 1),
+            reset_classifier=kwargs.get('reset_classifier', True),
+            num_classes=kwargs.get('num_classes'),
+            prompt_init_std=kwargs.get('prompt_init_std', 0.02),
         )

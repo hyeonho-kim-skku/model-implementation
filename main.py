@@ -109,6 +109,9 @@ if __name__ == "__main__":
     parser.add_argument('--pretrained', action=argparse.BooleanOptionalAction, default=True, help='Load pretrained timm weights')
     parser.add_argument('--freeze-encoder', dest='freeze_encoder', action=argparse.BooleanOptionalAction, default=False, help='Train only the classifier head for timm_classifier')
     parser.add_argument('--reset-classifier', dest='reset_classifier', action=argparse.BooleanOptionalAction, default=False, help='Replace the classifier head when loading a pruned artifact')
+    parser.add_argument('--prompt-mode', dest='prompt_mode', choices=['shallow', 'deep'], default='shallow', help='Visual prompt placement for timm_pruned_vpt')
+    parser.add_argument('--num-prompt-tokens', dest='num_prompt_tokens', type=int, default=1, help='Number of visual prompt tokens per prompted layer')
+    parser.add_argument('--prompt-init-std', dest='prompt_init_std', type=float, default=0.02, help='Truncated-normal initialization std for visual prompts')
     parser.add_argument('--disable-progress', dest='disable_progress', action='store_true', help='Disable tqdm progress bars for cleaner batch logs')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for training reproducibility')
 
