@@ -56,6 +56,7 @@ def load_model(**kwargs):
             pretrained=kwargs.get('pretrained', False),
             img_size=kwargs.get('img_size'),
             freeze_encoder=kwargs.get('freeze_encoder', False),
+            classifier_init=kwargs.get('classifier_init', 'random'),
         )
     elif model == 'timm_lora':
         return TIMMLoRA(

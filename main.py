@@ -129,6 +129,7 @@ if __name__ == "__main__":
     parser.add_argument('--backbone-name', dest='backbone_name', type=str, help='timm backbone name')
     parser.add_argument('--img-size', dest='img_size', type=int, help='Override timm model input size')
     parser.add_argument('--pretrained', action=argparse.BooleanOptionalAction, default=True, help='Load pretrained timm weights')
+    parser.add_argument('--classifier-init', dest='classifier_init', choices=['random', 'pretrained'], default='random', help='Initialize the external classifier randomly or from matching timm pretrained weights')
     parser.add_argument('--freeze-encoder', dest='freeze_encoder', action=argparse.BooleanOptionalAction, default=False, help='Train only the classifier head for timm_classifier')
     parser.add_argument('--reset-classifier', dest='reset_classifier', action=argparse.BooleanOptionalAction, default=False, help='Replace the classifier head when loading a pruned artifact')
     parser.add_argument('--prompt-mode', dest='prompt_mode', choices=['shallow', 'deep'], default='shallow', help='Visual prompt placement for timm_pruned_vpt')

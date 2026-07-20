@@ -1,3 +1,5 @@
+import copy
+
 import timm
 import torch
 import torch.nn as nn
@@ -6,6 +8,8 @@ import torch.nn as nn
 class TIMMClassifier(nn.Module):
     """Plain timm backbone + classifier head without LoRA wrappers."""
 
+    VALID_CLASSIFIER_INITS = {"random", "pretrained"}
+
     def __init__(
         self,
         backbone_name,
@@ -13,16 +17,27 @@ class TIMMClassifier(nn.Module):
         pretrained=False,
         img_size=None,
         freeze_encoder=False,
+        classifier_init="random",
     ):
         super().__init__()
         if backbone_name is None:
             raise ValueError("backbone_name must be provided for model='timm_classifier'.")
         if num_classes is None:
             raise ValueError("num_classes must be provided for model='timm_classifier'.")
+        classifier_init = str(classifier_init).lower()
+        if classifier_init not in self.VALID_CLASSIFIER_INITS:
+            raise ValueError(
+                f"classifier_init must be one of {sorted(self.VALID_CLASSIFIER_INITS)}, "
+                f"got {classifier_init!r}."
+            )
+        if classifier_init == "pretrained" and not pretrained:
+            raise ValueError(
+                "classifier_init='pretrained' requires pretrained=True."
+            )
 
         create_model_kwargs = {
             "pretrained": pretrained,
-            "num_classes": 0,
+            "num_classes": num_classes if classifier_init == "pretrained" else 0,
         }
         if img_size is not None:
             create_model_kwargs["img_size"] = img_size
@@ -31,7 +46,30 @@ class TIMMClassifier(nn.Module):
         self.img_size = img_size
         self.pretrained = pretrained
         self.freeze_encoder = freeze_encoder
+        self.classifier_init = classifier_init
+
+        if classifier_init == "pretrained":
+            pretrained_config = timm.get_pretrained_cfg(backbone_name)
+            pretrained_num_classes = int(pretrained_config.num_classes)
+            if int(num_classes) != pretrained_num_classes:
+                raise ValueError(
+                    "classifier_init='pretrained' requires num_classes to match "
+                    f"the pretrained weight configuration: {num_classes} != "
+                    f"{pretrained_num_classes}."
+                )
+
         self.encoder = timm.create_model(backbone_name, **create_model_kwargs)
+
+        if classifier_init == "pretrained":
+            pretrained_classifier = self.encoder.get_classifier()
+            if not isinstance(pretrained_classifier, nn.Linear):
+                raise TypeError(
+                    "TIMMClassifier currently supports pretrained nn.Linear "
+                    f"classifiers, got {type(pretrained_classifier).__name__}."
+                )
+            self.classifier = copy.deepcopy(pretrained_classifier)
+            self.encoder.reset_classifier(0)
+
         if self.freeze_encoder:
             for parameter in self.encoder.parameters():
                 parameter.requires_grad = False
@@ -40,10 +78,12 @@ class TIMMClassifier(nn.Module):
         if feature_dim is None:
             raise ValueError(f"{backbone_name} does not expose encoder.num_features.")
 
-        self.classifier = nn.Linear(feature_dim, num_classes)
+        if classifier_init == "random":
+            self.classifier = nn.Linear(feature_dim, num_classes)
         self.trainable_params, self.total_params = self.count_parameters()
 
         print(f"[TIMMClassifier] backbone: {self.backbone_name}")
+        print(f"[TIMMClassifier] classifier init: {self.classifier_init}")
         print(f"[TIMMClassifier] freeze_encoder: {self.freeze_encoder}")
         print(
             f"[TIMMClassifier] trainable params: {self.trainable_params:,} / "
@@ -91,4 +131,5 @@ class TIMMClassifier(nn.Module):
             "num_classes": self.classifier.out_features,
             "pretrained": self.pretrained,
             "freeze_encoder": self.freeze_encoder,
+            "classifier_init": self.classifier_init,
         }

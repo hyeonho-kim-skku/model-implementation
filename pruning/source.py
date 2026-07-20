@@ -53,14 +53,14 @@ def _build_checkpoint_source(config, device):
 
 
 def _build_timm_source(config):
-    # Direct timm sources start from pretrained backbone weights and a freshly
-    # initialized classifier. The classifier is included so the object has the
-    # same TIMMClassifier shape as checkpoint-derived sources, but its accuracy
-    # is not meaningful until a downstream probing/recovery step trains it.
+    # Direct timm sources default to the historical transfer-learning behavior
+    # (pretrained backbone plus a random classifier). ImageNet pruning can opt
+    # into preserving the timm pretrained classifier explicitly.
     backbone_name = _require(config, "backbone_name")
     num_classes = _require(config, "num_classes")
     img_size = config.get("img_size")
     pretrained = config.get("pretrained", True)
+    classifier_init = config.get("classifier_init", "random")
 
     model = TIMMClassifier(
         backbone_name=backbone_name,
@@ -68,6 +68,7 @@ def _build_timm_source(config):
         pretrained=pretrained,
         img_size=img_size,
         freeze_encoder=False,
+        classifier_init=classifier_init,
     )
     return PruningSource(
         model=model,
@@ -78,6 +79,7 @@ def _build_timm_source(config):
             "checkpoint_meta": None,
             "backbone_name": backbone_name,
             "pretrained": pretrained,
+            "classifier_init": classifier_init,
         },
     )
 

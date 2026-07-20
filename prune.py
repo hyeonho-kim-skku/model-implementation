@@ -31,6 +31,7 @@ def build_parser():
     parser.add_argument("--num-classes", dest="num_classes", type=int, help="Number of classes for source_type=timm")
     parser.add_argument("--img-size", dest="img_size", type=int, help="Input image size for source_type=timm")
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True, help="Load pretrained timm weights for source_type=timm")
+    parser.add_argument("--classifier-init", dest="classifier_init", choices=["random", "pretrained"], default="random", help="Initialize the classifier randomly or from matching timm pretrained weights")
     parser.add_argument("--output-dir", dest="output_dir", type=str, default="./pruned", help="Directory to save pruned artifacts")
     parser.add_argument("--output-path", dest="output_path", type=str, default=None, help="Optional full path for the pruned artifact")
     parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor", "activation_taylor", "gate_taylor", "head_gate_taylor"], default="magnitude", help="Importance criterion for structured pruning")
