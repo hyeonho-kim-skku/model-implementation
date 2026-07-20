@@ -5,7 +5,10 @@ import os
 import torch
 import yaml
 
-from pruning.eval import evaluate_pruned_model
+from pruning.eval import (
+    build_pruned_evaluation_transform,
+    evaluate_pruned_model,
+)
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -21,6 +24,7 @@ def build_parser():
     parser.add_argument("--split", type=str, default="test", help="Dataset split to evaluate: train or test")
     parser.add_argument("--num-workers", dest="num_workers", type=int, default=4, help="DataLoader worker count")
     parser.add_argument("--max-batches", dest="max_batches", type=int, default=None, help="Optional quick eval batch limit")
+    parser.add_argument("--evaluation-transform", dest="evaluation_transform", choices=["default", "timm_pretrained"], default="default", help="Evaluation preprocessing; default preserves the legacy dataset test transform")
     parser.add_argument("--output-json", dest="output_json", type=str, default=None, help="Optional path to save evaluation metrics as JSON")
     return parser
 
@@ -34,6 +38,10 @@ def save_metrics_json(args, artifact, metrics):
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "max_batches": args.max_batches,
+        "evaluation_transform": build_pruned_evaluation_transform(
+            artifact["model"],
+            evaluation_transform=args.evaluation_transform,
+        )[1],
         "metrics": metrics,
         "model_config": artifact.get("model_config", {}),
         "source": artifact.get("source", {}),
@@ -57,9 +65,11 @@ def main(args):
         num_workers=args.num_workers,
         max_batches=args.max_batches,
         data_root=args.data_root,
+        evaluation_transform=args.evaluation_transform,
     )
     print(f"[PrunedEval] artifact: {args.artifact_path}")
     print(f"[PrunedEval] dataset: {args.dataset} ({args.split})")
+    print(f"[PrunedEval] transform: {args.evaluation_transform}")
     print(f"[PrunedEval] loss: {metrics['loss']:.4f}")
     print(f"[PrunedEval] acc: {metrics['acc']:.2f}%")
     print(f"[PrunedEval] source: {artifact.get('source', {})}")

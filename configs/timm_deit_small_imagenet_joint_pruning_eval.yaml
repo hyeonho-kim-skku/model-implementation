@@ -1,0 +1,9 @@
+artifact_path: ./pruned/timm_deit_small_imagenet_joint_mlp40_head40/pruned_timm_classifier.pth
+dataset: imagenet
+data_root: /data/imagenet/images
+split: test
+batch_size: 128
+num_workers: 8
+max_batches:
+evaluation_transform: timm_pretrained
+output_json: ./runs/timm_deit_small_imagenet_joint_mlp40_head40/pruning_only_eval_metrics.json
