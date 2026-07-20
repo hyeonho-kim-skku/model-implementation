@@ -5,11 +5,17 @@ import torch
 import torch.nn as nn
 
 from prune import build_parser
+from pruning.calibration import compute_taylor_gradients as moved_compute_taylor_gradients
 from pruning.head_pruning import select_attention_heads_by_score
+from pruning.joint import (
+    JOINT_GATE_TAYLOR_HEAD_CONFIG as moved_head_config,
+    JOINT_GATE_TAYLOR_MLP_CONFIG as moved_mlp_config,
+)
 from pruning.structured import (
     JOINT_GATE_TAYLOR_HEAD_CONFIG,
     JOINT_GATE_TAYLOR_MLP_CONFIG,
     _validate_joint_gate_taylor_scores,
+    compute_taylor_gradients,
 )
 
 
@@ -30,6 +36,11 @@ def _score_validation_model(num_blocks=12, hidden_dim=1536, num_heads=6):
 
 
 class JointPruningTest(unittest.TestCase):
+    def test_compatibility_reexports(self):
+        self.assertIs(compute_taylor_gradients, moved_compute_taylor_gradients)
+        self.assertIs(JOINT_GATE_TAYLOR_MLP_CONFIG, moved_mlp_config)
+        self.assertIs(JOINT_GATE_TAYLOR_HEAD_CONFIG, moved_head_config)
+
     def test_joint_defaults_and_cli_ratios(self):
         self.assertEqual(
             JOINT_GATE_TAYLOR_MLP_CONFIG,
