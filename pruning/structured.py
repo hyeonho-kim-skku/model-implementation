@@ -32,6 +32,16 @@ from utils import move_to_device
 
 VALID_PRUNING_MODULES = {"head", "mlp"}
 VALID_TAYLOR_CALIBRATION_OBJECTIVES = {"ce", "feature_dim_masked_ce"}
+JOINT_GATE_TAYLOR_MLP_CONFIG = {
+    "gate_location": "fc2_in",
+    "reduction": "sum_square",
+    "aggregation": "samplewise",
+}
+JOINT_GATE_TAYLOR_HEAD_CONFIG = {
+    "gate_location": "proj_in",
+    "reduction": "sum_square",
+    "aggregation": "samplewise",
+}
 
 
 def _normalize_calibration_batches(calibration_batches):
@@ -526,6 +536,46 @@ def _head_scores_for_selection(model, module_keyed_scores, target_block_indices=
     return selected_scores
 
 
+def _validate_joint_gate_taylor_scores(
+    model,
+    mlp_scores,
+    head_scores,
+    target_block_indices=None,
+):
+    """Validate dense-model score tensors before either structure is mutated."""
+
+    targets = _collect_pruning_targets(
+        model,
+        pruning_modules=("mlp", "head"),
+        target_block_indices=target_block_indices,
+    )
+    for fc1 in targets.mlp_layers:
+        score = mlp_scores.get(fc1)
+        if score is None:
+            raise ValueError("joint_gate_taylor is missing an MLP score tensor.")
+        score = torch.as_tensor(score)
+        if score.ndim != 1 or score.numel() != fc1.out_features:
+            raise ValueError(
+                "joint_gate_taylor MLP score shape must match fc1.out_features: "
+                f"got {tuple(score.shape)}, expected ({fc1.out_features},)."
+            )
+        if not torch.isfinite(score).all():
+            raise ValueError("joint_gate_taylor MLP scores contain non-finite values.")
+
+    for qkv, num_heads in targets.num_heads.items():
+        score = head_scores.get(qkv)
+        if score is None:
+            raise ValueError("joint_gate_taylor is missing an attention-head score tensor.")
+        score = torch.as_tensor(score)
+        if score.ndim != 1 or score.numel() != num_heads:
+            raise ValueError(
+                "joint_gate_taylor head score shape must match num_heads: "
+                f"got {tuple(score.shape)}, expected ({num_heads},)."
+            )
+        if not torch.isfinite(score).all():
+            raise ValueError("joint_gate_taylor head scores contain non-finite values.")
+
+
 def _collect_target_shapes(model, pruning_modules, target_block_indices=None):
     shapes = {}
     if not pruning_modules:
@@ -572,6 +622,13 @@ def _print_shape_changes(before_shapes, after_shapes, max_lines=24):
 
 def _ratio(numerator, denominator):
     return None if denominator == 0 else numerator / denominator
+
+
+def _validate_pruning_ratio(name, value):
+    value = float(value)
+    if value < 0.0 or value >= 1.0:
+        raise ValueError(f"{name} must be in [0, 1), got {value}.")
+    return value
 
 
 def _build_target_pruning_summary(before_shapes, after_shapes):
@@ -713,6 +770,8 @@ def _build_pruning_artifact(
     pruning_modules,
     target_block_indices,
     pruning_ratio,
+    mlp_pruning_ratio,
+    head_pruning_ratio,
     iterative_steps,
     global_pruning,
     round_to,
@@ -736,6 +795,8 @@ def _build_pruning_artifact(
     attention_metadata_after=None,
     selected_attention_heads=None,
     direct_head_pruning_metadata=None,
+    num_pruned_mlp_groups=None,
+    num_pruned_heads=None,
 ):
     """Package the pruned model and pruning statistics into a serializable artifact."""
 
@@ -750,6 +811,16 @@ def _build_pruning_artifact(
                 None if target_block_indices is None else list(target_block_indices)
             ),
             "pruning_ratio": pruning_ratio,
+            "mlp_pruning_ratio": mlp_pruning_ratio,
+            "head_pruning_ratio": head_pruning_ratio,
+            "joint_ranking_scopes": (
+                {"mlp": "global", "head": "global"}
+                if importance == "joint_gate_taylor"
+                else None
+            ),
+            "joint_calibration_passes": (
+                1 if importance == "joint_gate_taylor" else None
+            ),
             "iterative_steps": iterative_steps,
             "global_pruning": global_pruning,
             "round_to": round_to,
@@ -771,6 +842,8 @@ def _build_pruning_artifact(
             "base_params": base_params,
             "pruned_params": pruned_params,
             "num_pruned_groups": num_pruned_groups,
+            "num_pruned_mlp_groups": num_pruned_mlp_groups,
+            "num_pruned_heads": num_pruned_heads,
             "target_pruning_summary": target_pruning_summary,
             "attention_metadata_before": attention_metadata_before,
             "attention_metadata_after": attention_metadata_after,
@@ -788,6 +861,8 @@ def prune_model(
     output_path=None,
     importance="magnitude",
     pruning_ratio=0.2,
+    mlp_pruning_ratio=0.4,
+    head_pruning_ratio=0.4,
     pruning_modules=None,
     target_block_indices=None,
     iterative_steps=1,
@@ -829,12 +904,15 @@ def prune_model(
     save_artifact=False is useful for sensitivity sweeps that only need metrics.
     verbose=False suppresses per-trial logs during large sweeps.
 
-    Two pruning styles live here:
+    Three pruning styles live here:
     - Torch-Pruning ranked pruning for magnitude/taylor/MLP activation/gate
       Taylor. BasePruner owns both ranking and structural deletion.
     - Direct head_gate_taylor pruning. The project computes head scores and
       selects concrete head ids itself, then uses Torch-Pruning's
       DependencyGraph only to remove the matching qkv/proj slices safely.
+    - Joint gate Taylor pruning. MLP and whole-head scores are collected in one
+      calibration pass, ranked in separate global scopes, then structurally
+      removed from the same dense source model.
     """
 
     model = model.to(device)
@@ -871,15 +949,48 @@ def prune_model(
     base_macs, base_params = _count_ops_and_params(model, example_inputs)
     calibration_config = None
     importance_type = (importance or "magnitude").strip().lower()
-    importance_group_reduction = None if importance_type == "head_gate_taylor" else "mean"
+    joint_gate_taylor = importance_type == "joint_gate_taylor"
+    if joint_gate_taylor:
+        if set(normalized_modules) != {"mlp", "head"} or len(normalized_modules) != 2:
+            raise ValueError(
+                "joint_gate_taylor requires pruning_modules='mlp,head' "
+                "(order does not matter)."
+            )
+        if not global_pruning:
+            raise ValueError("joint_gate_taylor requires global_pruning=True.")
+        if iterative_steps != 1:
+            raise ValueError("joint_gate_taylor currently supports iterative_steps=1.")
+        if head_pruning_root not in {"proj_in", "qkv_out"}:
+            raise ValueError(
+                "head_pruning_root must be one of ['proj_in', 'qkv_out'], "
+                f"got {head_pruning_root!r}."
+            )
+        mlp_pruning_ratio = _validate_pruning_ratio(
+            "mlp_pruning_ratio",
+            mlp_pruning_ratio,
+        )
+        head_pruning_ratio = _validate_pruning_ratio(
+            "head_pruning_ratio",
+            head_pruning_ratio,
+        )
+        if round_to is None:
+            round_to = 8
+
+    importance_group_reduction = (
+        None if importance_type == "head_gate_taylor" else "mean"
+    )
     importance_normalizer = (
-        None if importance_type in {"gate_taylor", "head_gate_taylor"} else "mean"
+        None
+        if importance_type in {"gate_taylor", "head_gate_taylor", "joint_gate_taylor"}
+        else "mean"
     )
     activation_taylor_scores = None
     gate_taylor_scores = None
     head_gate_taylor_scores = None
     direct_head_pruning_metadata = None
     selected_attention_heads = None
+    num_pruned_mlp_groups = None
+    num_pruned_heads = None
     if importance_type == "activation_taylor":
         if activation_taylor_reduction not in VALID_ACTIVATION_TAYLOR_REDUCTIONS:
             raise ValueError(
@@ -957,8 +1068,128 @@ def prune_model(
             if existing_head_gate_taylor_scores is None
             else existing_head_gate_taylor_scores
         )
+    if joint_gate_taylor:
+        gate_taylor_scores = (
+            {} if existing_gate_taylor_scores is None else existing_gate_taylor_scores
+        )
+        head_gate_taylor_scores = (
+            {}
+            if existing_head_gate_taylor_scores is None
+            else existing_head_gate_taylor_scores
+        )
     if normalized_modules:
-        if importance_type == "head_gate_taylor":
+        if joint_gate_taylor:
+            if use_existing_taylor_gradients:
+                if existing_calibration_config is None:
+                    raise ValueError(
+                        "existing_calibration_config is required when "
+                        "joint_gate_taylor uses existing calibration."
+                    )
+                if not gate_taylor_scores or not head_gate_taylor_scores:
+                    raise ValueError(
+                        "joint_gate_taylor existing calibration requires both "
+                        "existing_gate_taylor_scores and "
+                        "existing_head_gate_taylor_scores."
+                    )
+                calibration_config = existing_calibration_config
+            else:
+                mlp_collector = MLPGateTaylorCollector(
+                    model=model,
+                    target_block_indices=normalized_target_block_indices,
+                    reduction=JOINT_GATE_TAYLOR_MLP_CONFIG["reduction"],
+                    gate_location=JOINT_GATE_TAYLOR_MLP_CONFIG["gate_location"],
+                    aggregation=JOINT_GATE_TAYLOR_MLP_CONFIG["aggregation"],
+                )
+                head_collector = AttentionHeadGateTaylorCollector(
+                    model=model,
+                    target_block_indices=normalized_target_block_indices,
+                    reduction=JOINT_GATE_TAYLOR_HEAD_CONFIG["reduction"],
+                    gate_location=JOINT_GATE_TAYLOR_HEAD_CONFIG["gate_location"],
+                    aggregation=JOINT_GATE_TAYLOR_HEAD_CONFIG["aggregation"],
+                )
+                try:
+                    calibration_config = compute_taylor_gradients(
+                        model=model,
+                        calibration_dataset=calibration_dataset,
+                        calibration_batch_size=calibration_batch_size,
+                        calibration_batches=calibration_batches,
+                        calibration_split=calibration_split,
+                        num_workers=num_workers,
+                        data_root=data_root,
+                        device=device,
+                        calibration_seed=calibration_seed,
+                        gate_taylor_collector=mlp_collector,
+                        head_gate_taylor_collector=head_collector,
+                        calibration_objective=calibration_objective,
+                        feature_dim_mask=feature_dim_mask,
+                        feature_dim_mask_metadata=feature_dim_mask_metadata,
+                    )
+                    gate_taylor_scores.update(mlp_collector.final_scores())
+                    head_gate_taylor_scores.update(head_collector.final_scores())
+                finally:
+                    mlp_collector.remove()
+                    head_collector.remove()
+
+            if not gate_taylor_scores:
+                raise ValueError(
+                    "joint_gate_taylor calibration produced no MLP scores."
+                )
+            if not head_gate_taylor_scores:
+                raise ValueError(
+                    "joint_gate_taylor calibration produced no attention-head scores."
+                )
+            _validate_joint_gate_taylor_scores(
+                model,
+                mlp_scores=gate_taylor_scores,
+                head_scores=head_gate_taylor_scores,
+                target_block_indices=normalized_target_block_indices,
+            )
+
+            # Resolve explicit head ids while the model still has its dense head
+            # metadata. MLP pruning does not mutate qkv modules, so these ids
+            # remain valid for the subsequent structural head deletion.
+            block_head_scores = _head_scores_for_selection(
+                model,
+                head_gate_taylor_scores,
+                normalized_target_block_indices,
+            )
+            selected_attention_heads = select_attention_heads_by_score(
+                block_head_scores,
+                pruning_ratio=head_pruning_ratio,
+                global_pruning=True,
+                min_heads_per_block=1,
+            )
+
+            # MLP units and heads deliberately use separate global rankings.
+            # The MLP pruner sees only fc1 roots and the direct head path sees
+            # only whole-head scores; their numeric score scales never mix.
+            mlp_pruner, _ = _build_pruner(
+                model=model,
+                example_inputs=example_inputs,
+                importance="gate_taylor",
+                pruning_ratio=mlp_pruning_ratio,
+                pruning_modules=("mlp",),
+                target_block_indices=normalized_target_block_indices,
+                iterative_steps=1,
+                global_pruning=True,
+                round_to=round_to,
+                gate_taylor_scores=gate_taylor_scores,
+            )
+            history_before = len(mlp_pruner.pruning_history())
+            mlp_pruner.step()
+            num_pruned_mlp_groups = (
+                len(mlp_pruner.pruning_history()) - history_before
+            )
+
+            direct_head_pruning_metadata = prune_selected_attention_heads(
+                model=model,
+                example_inputs=example_inputs,
+                selected_heads=selected_attention_heads,
+                root=head_pruning_root,
+            )
+            num_pruned_heads = direct_head_pruning_metadata["num_pruned_heads"]
+            num_pruned_groups = num_pruned_mlp_groups + num_pruned_heads
+        elif importance_type == "head_gate_taylor":
             # Direct attention-head path:
             # 1. Obtain qkv-keyed [num_heads] scores, either from calibration
             #    below or from an existing snapshot supplied by a sweep.
@@ -1042,6 +1273,7 @@ def prune_model(
                 root=head_pruning_root,
             )
             num_pruned_groups = direct_head_pruning_metadata["num_pruned_heads"]
+            num_pruned_heads = direct_head_pruning_metadata["num_pruned_heads"]
         else:
             # The pruner builds the dependency graph and decides which channel groups
             # can be removed together. The importance object only decides the ranking.
@@ -1133,6 +1365,8 @@ def prune_model(
             history_before = len(pruner.pruning_history())
             pruner.step()
             num_pruned_groups = len(pruner.pruning_history()) - history_before
+            if "mlp" in normalized_modules:
+                num_pruned_mlp_groups = num_pruned_groups
             _refresh_attention_metadata(
                 model,
                 attention_metadata_before=attention_metadata_before,
@@ -1168,7 +1402,9 @@ def prune_model(
         calibration_config=calibration_config,
         pruning_modules=normalized_modules,
         target_block_indices=normalized_target_block_indices,
-        pruning_ratio=pruning_ratio,
+        pruning_ratio=None if joint_gate_taylor else pruning_ratio,
+        mlp_pruning_ratio=mlp_pruning_ratio if joint_gate_taylor else None,
+        head_pruning_ratio=head_pruning_ratio if joint_gate_taylor else None,
         iterative_steps=iterative_steps,
         global_pruning=global_pruning,
         round_to=round_to,
@@ -1179,21 +1415,41 @@ def prune_model(
             if importance_type == "activation_taylor"
             else None
         ),
-        gate_taylor_reduction=gate_taylor_reduction if importance_type == "gate_taylor" else None,
-        gate_taylor_location=gate_taylor_location if importance_type == "gate_taylor" else None,
+        gate_taylor_reduction=(
+            JOINT_GATE_TAYLOR_MLP_CONFIG["reduction"]
+            if joint_gate_taylor
+            else gate_taylor_reduction if importance_type == "gate_taylor" else None
+        ),
+        gate_taylor_location=(
+            JOINT_GATE_TAYLOR_MLP_CONFIG["gate_location"]
+            if joint_gate_taylor
+            else gate_taylor_location if importance_type == "gate_taylor" else None
+        ),
         gate_taylor_aggregation=(
-            gate_taylor_aggregation if importance_type == "gate_taylor" else None
+            JOINT_GATE_TAYLOR_MLP_CONFIG["aggregation"]
+            if joint_gate_taylor
+            else gate_taylor_aggregation if importance_type == "gate_taylor" else None
         ),
         head_gate_taylor_reduction=(
-            head_gate_taylor_reduction if importance_type == "head_gate_taylor" else None
+            JOINT_GATE_TAYLOR_HEAD_CONFIG["reduction"]
+            if joint_gate_taylor
+            else head_gate_taylor_reduction if importance_type == "head_gate_taylor" else None
         ),
         head_gate_taylor_location=(
-            head_gate_taylor_location if importance_type == "head_gate_taylor" else None
+            JOINT_GATE_TAYLOR_HEAD_CONFIG["gate_location"]
+            if joint_gate_taylor
+            else head_gate_taylor_location if importance_type == "head_gate_taylor" else None
         ),
         head_gate_taylor_aggregation=(
-            head_gate_taylor_aggregation if importance_type == "head_gate_taylor" else None
+            JOINT_GATE_TAYLOR_HEAD_CONFIG["aggregation"]
+            if joint_gate_taylor
+            else head_gate_taylor_aggregation if importance_type == "head_gate_taylor" else None
         ),
-        head_pruning_root=head_pruning_root if importance_type == "head_gate_taylor" else None,
+        head_pruning_root=(
+            head_pruning_root
+            if importance_type in {"head_gate_taylor", "joint_gate_taylor"}
+            else None
+        ),
         base_macs=base_macs,
         base_params=base_params,
         pruned_macs=pruned_macs,
@@ -1204,6 +1460,8 @@ def prune_model(
         attention_metadata_after=attention_metadata_after,
         selected_attention_heads=selected_attention_heads,
         direct_head_pruning_metadata=direct_head_pruning_metadata,
+        num_pruned_mlp_groups=num_pruned_mlp_groups,
+        num_pruned_heads=num_pruned_heads,
     )
 
     if output_path is None:
@@ -1221,7 +1479,13 @@ def prune_model(
             print(f"[Pruning] calibration: {calibration_config}")
         print(f"[Pruning] modules: {list(normalized_modules)}")
         print(f"[Pruning] target blocks: {normalized_target_block_indices}")
-        print(f"[Pruning] ratio: {pruning_ratio}")
+        if joint_gate_taylor:
+            print(
+                "[Pruning] joint ratios: "
+                f"mlp={mlp_pruning_ratio}, head={head_pruning_ratio}"
+            )
+        else:
+            print(f"[Pruning] ratio: {pruning_ratio}")
         print(f"[Pruning] groups pruned: {num_pruned_groups}")
         _print_pruning_summary(target_pruning_summary, max_lines=0)
         print(f"[Pruning] MACs: {base_macs:,} -> {pruned_macs:,}")

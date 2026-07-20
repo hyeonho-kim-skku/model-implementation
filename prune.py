@@ -34,7 +34,7 @@ def build_parser():
     parser.add_argument("--classifier-init", dest="classifier_init", choices=["random", "pretrained"], default="random", help="Initialize the classifier randomly or from matching timm pretrained weights")
     parser.add_argument("--output-dir", dest="output_dir", type=str, default="./pruned", help="Directory to save pruned artifacts")
     parser.add_argument("--output-path", dest="output_path", type=str, default=None, help="Optional full path for the pruned artifact")
-    parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor", "activation_taylor", "gate_taylor", "head_gate_taylor"], default="magnitude", help="Importance criterion for structured pruning")
+    parser.add_argument("--importance", dest="importance", type=str, choices=["magnitude", "taylor", "activation_taylor", "gate_taylor", "head_gate_taylor", "joint_gate_taylor"], default="magnitude", help="Importance criterion for structured pruning")
     parser.add_argument("--activation-taylor-reduction", dest="activation_taylor_reduction", type=str, choices=["sum_abs", "abs_sum"], default="sum_abs", help="Reduction for activation_taylor scores")
     parser.add_argument("--gate-taylor-reduction", dest="gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for gate_taylor scores")
     parser.add_argument("--gate-taylor-location", dest="gate_taylor_location", type=str, default="fc1_out", help="Gate insertion point for gate_taylor")
@@ -42,6 +42,8 @@ def build_parser():
     parser.add_argument("--head-gate-taylor-reduction", dest="head_gate_taylor_reduction", type=str, choices=["signed_damage", "sum_abs", "sum_square"], default="sum_abs", help="Reduction for head_gate_taylor scores")
     parser.add_argument("--head-gate-taylor-aggregation", dest="head_gate_taylor_aggregation", type=str, choices=["elementwise", "samplewise", "channelwise", "tokenwise"], default="samplewise", help="Aggregation unit for head_gate_taylor scores")
     parser.add_argument("--pruning-ratio", dest="pruning_ratio", type=float, default=0.2, help="Structured pruning ratio")
+    parser.add_argument("--mlp-pruning-ratio", dest="mlp_pruning_ratio", type=float, default=0.4, help="MLP hidden-unit ratio for joint_gate_taylor")
+    parser.add_argument("--head-pruning-ratio", dest="head_pruning_ratio", type=float, default=0.4, help="Whole-head ratio for joint_gate_taylor")
     parser.add_argument("--pruning-modules", dest="pruning_modules", type=str, default=None, help="Comma-separated pruning targets: head,mlp")
     parser.add_argument("--target-block-indices", dest="target_block_indices", type=str, default=None, help="Optional comma-separated transformer block indices to prune")
     parser.add_argument("--iterative-steps", dest="iterative_steps", type=int, default=1, help="Number of iterative pruning steps")
@@ -69,6 +71,8 @@ def main(args):
         output_path=args.output_path,
         importance=args.importance,
         pruning_ratio=args.pruning_ratio,
+        mlp_pruning_ratio=args.mlp_pruning_ratio,
+        head_pruning_ratio=args.head_pruning_ratio,
         pruning_modules=args.pruning_modules,
         target_block_indices=args.target_block_indices,
         iterative_steps=args.iterative_steps,
