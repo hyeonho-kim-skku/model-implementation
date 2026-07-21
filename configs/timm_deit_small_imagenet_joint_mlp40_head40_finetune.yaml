@@ -1,0 +1,25 @@
+# Start: CUDA_VISIBLE_DEVICES=7 /home/hyeonho/miniconda3/envs/resnet/bin/python finetune_pruned.py --config configs/timm_deit_small_imagenet_joint_mlp40_head40_finetune.yaml
+# Resume: CUDA_VISIBLE_DEVICES=7 /home/hyeonho/miniconda3/envs/resnet/bin/python finetune_pruned.py --config configs/timm_deit_small_imagenet_joint_mlp40_head40_finetune.yaml --resume runs/timm_deit_small_imagenet_joint_mlp40_head40/finetune_60e/latest.pth
+artifact_path: ./pruned/timm_deit_small_imagenet_joint_mlp40_head40/pruned_timm_classifier.pth
+dataset: imagenet
+data_root: /data/imagenet/images
+output_dir: ./runs/timm_deit_small_imagenet_joint_mlp40_head40/finetune_60e
+
+epochs: 60
+batch_size: 512
+num_workers: 8
+seed: 42
+num_classes: 1000
+
+learning_rate: 0.0003
+weight_decay: 0.05
+drop_path: 0.0
+mixup: 0.8
+cutmix: 1.0
+label_smoothing: 0.1
+repeated_augmentation_reps: 3
+pruning_only_top1: 14.042
+
+# Optional smoke-test limits; leave null for the full run.
+max_train_batches:
+max_val_batches:

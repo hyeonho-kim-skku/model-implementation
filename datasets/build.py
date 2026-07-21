@@ -180,6 +180,9 @@ def get_loader(
     generator=None,
     worker_init_fn=None,
     transform=None,
+    repeat_aug_reps=None,
+    pin_memory=False,
+    persistent_workers=False,
 ):
     # Transform 생성
     if transform is None:
@@ -212,14 +215,37 @@ def get_loader(
         dataset = dataset_class(root=data_root, train=train, download=True, transform=transform)
 
     # DataLoader 생성
+    sampler = None
+    if repeat_aug_reps is not None:
+        repeat_aug_reps = int(repeat_aug_reps)
+        if repeat_aug_reps <= 0:
+            raise ValueError("repeat_aug_reps must be positive or None.")
+        # Keep this optional so all existing loaders retain their original
+        # RandomSampler behavior. RepeatAugSampler is the DeiT augmentation
+        # sampler used by ImageNet full fine-tuning.
+        from timm.data.distributed_sampler import RepeatAugSampler
+
+        # This project currently launches one process on one selected GPU.
+        # Passing the topology explicitly avoids RepeatAugSampler attempting to
+        # query an uninitialized torch.distributed process group.
+        sampler = RepeatAugSampler(
+            dataset,
+            num_replicas=1,
+            rank=0,
+            num_repeats=repeat_aug_reps,
+        )
+
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
+        sampler=sampler,
         num_workers=num_workers,
         drop_last=drop_last,
         generator=generator,
         worker_init_fn=worker_init_fn,
+        pin_memory=pin_memory,
+        persistent_workers=bool(persistent_workers and num_workers > 0),
     )
 
     return dataloader
