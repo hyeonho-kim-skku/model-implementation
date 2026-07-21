@@ -1,4 +1,5 @@
 # Start: CUDA_VISIBLE_DEVICES=7 /home/hyeonho/miniconda3/envs/resnet/bin/python finetune_pruned.py --config configs/timm_deit_small_imagenet_joint_mlp40_head40_finetune.yaml
+# DDP: CUDA_VISIBLE_DEVICES=5,7 /home/hyeonho/miniconda3/envs/resnet/bin/torchrun --standalone --nproc_per_node=2 finetune_pruned.py --config configs/timm_deit_small_imagenet_joint_mlp40_head40_finetune.yaml
 # Resume: CUDA_VISIBLE_DEVICES=7 /home/hyeonho/miniconda3/envs/resnet/bin/python finetune_pruned.py --config configs/timm_deit_small_imagenet_joint_mlp40_head40_finetune.yaml --resume runs/timm_deit_small_imagenet_joint_mlp40_head40/finetune_60e/latest.pth
 artifact_path: ./pruned/timm_deit_small_imagenet_joint_mlp40_head40/pruned_timm_classifier.pth
 dataset: imagenet
@@ -6,6 +7,7 @@ data_root: /data/imagenet/images
 output_dir: ./runs/timm_deit_small_imagenet_joint_mlp40_head40/finetune_60e
 
 epochs: 60
+# Global batch size. DDP divides this equally across GPU processes.
 batch_size: 512
 num_workers: 8
 seed: 42

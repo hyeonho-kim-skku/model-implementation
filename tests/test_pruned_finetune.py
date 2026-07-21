@@ -10,12 +10,19 @@ from pruning.finetune import (
     build_finetune_train_transform,
     build_mixup,
     load_resume_checkpoint,
+    resolve_local_batch_size,
     save_checkpoint,
     validate_resume_config,
 )
 
 
 class PrunedFineTuneTests(unittest.TestCase):
+    def test_global_batch_is_split_per_process(self):
+        self.assertEqual(resolve_local_batch_size(512, 1), 512)
+        self.assertEqual(resolve_local_batch_size(512, 2), 256)
+        with self.assertRaisesRegex(ValueError, "divisible"):
+            resolve_local_batch_size(513, 2)
+
     def test_train_transform_and_mixup(self):
         model = TIMMClassifier(
             backbone_name="deit_small_patch16_224.fb_in1k",

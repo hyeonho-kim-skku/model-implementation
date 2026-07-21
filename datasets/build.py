@@ -1,6 +1,7 @@
 import os
 
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 import torchvision.datasets as datasets
 from torchvision import transforms
 
@@ -183,6 +184,9 @@ def get_loader(
     repeat_aug_reps=None,
     pin_memory=False,
     persistent_workers=False,
+    distributed=False,
+    rank=0,
+    world_size=1,
 ):
     # Transform 생성
     if transform is None:
@@ -230,9 +234,17 @@ def get_loader(
         # query an uninitialized torch.distributed process group.
         sampler = RepeatAugSampler(
             dataset,
-            num_replicas=1,
-            rank=0,
+            num_replicas=world_size,
+            rank=rank,
             num_repeats=repeat_aug_reps,
+        )
+    elif distributed:
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=shuffle,
+            drop_last=drop_last,
         )
 
     dataloader = DataLoader(

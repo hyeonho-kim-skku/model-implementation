@@ -1,20 +1,22 @@
-"""Full fine-tuning utilities for serialized structured-pruning artifacts."""
+"""Single-GPU and DDP full fine-tuning for structured-pruning artifacts."""
 
 from __future__ import annotations
 
 import json
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel
 from timm.data import Mixup, create_transform, resolve_model_data_config
 
 from datasets import build_timm_eval_transform, get_loader
-from engine import evaluate_classifier
 from pruning.eval import load_pruned_artifact
 from utils import build_seeded_generator, load_optimizer, load_scheduler, seed_worker, set_seed
 
@@ -22,8 +24,64 @@ from utils import build_seeded_generator, load_optimizer, load_scheduler, seed_w
 KST = ZoneInfo("Asia/Seoul")
 
 
+@dataclass(frozen=True)
+class DistributedRuntime:
+    device: torch.device
+    rank: int = 0
+    local_rank: int = 0
+    world_size: int = 1
+
+    @property
+    def is_distributed(self):
+        return self.world_size > 1
+
+    @property
+    def is_main_process(self):
+        return self.rank == 0
+
+
+def initialize_distributed_runtime():
+    """Initialize NCCL only when launched through torchrun."""
+
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    rank = int(os.environ.get("RANK", "0"))
+    if not torch.cuda.is_available():
+        raise RuntimeError("Pruned ImageNet fine-tuning requires a CUDA GPU.")
+    if world_size > 1:
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl")
+    return DistributedRuntime(
+        device=torch.device("cuda", local_rank),
+        rank=rank,
+        local_rank=local_rank,
+        world_size=world_size,
+    )
+
+
+def destroy_distributed_runtime(runtime):
+    if runtime.is_distributed and dist.is_initialized():
+        dist.destroy_process_group()
+
+
 def kst_now():
     return datetime.now(KST).isoformat(timespec="seconds")
+
+
+def resolve_local_batch_size(global_batch_size, world_size):
+    global_batch_size = int(global_batch_size)
+    world_size = int(world_size)
+    if global_batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+    if global_batch_size % world_size != 0:
+        raise ValueError(
+            f"Global batch_size={global_batch_size} must be divisible by world_size={world_size}."
+        )
+    return global_batch_size // world_size
+
+
+def unwrap_model(model):
+    return model.module if isinstance(model, DistributedDataParallel) else model
 
 
 def _artifact_model(artifact_path, device):
@@ -36,8 +94,6 @@ def _artifact_model(artifact_path, device):
 
 
 def set_drop_path(model, drop_path):
-    """Set timm DropPath probabilities without changing the pruned structure."""
-
     drop_path = float(drop_path)
     if not 0.0 <= drop_path <= 1.0:
         raise ValueError("drop_path must be in [0, 1].")
@@ -47,9 +103,7 @@ def set_drop_path(model, drop_path):
 
 
 def build_finetune_train_transform(model):
-    """Build the fixed DeiT-style ImageNet fine-tuning preprocessing."""
-
-    backbone = getattr(model, "encoder", model)
+    backbone = getattr(unwrap_model(model), "encoder", unwrap_model(model))
     data_config = resolve_model_data_config(backbone)
     transform = create_transform(
         input_size=data_config["input_size"],
@@ -65,35 +119,42 @@ def build_finetune_train_transform(model):
     return transform, dict(data_config)
 
 
-def build_finetune_loaders(config, model):
+def build_finetune_loaders(config, model, runtime):
     dataset = config.get("dataset", "imagenet")
     if dataset != "imagenet":
         raise ValueError("Pruned full fine-tuning currently supports dataset='imagenet' only.")
-    batch_size = int(config["batch_size"])
+    global_batch_size = int(config["batch_size"])
+    local_batch_size = resolve_local_batch_size(global_batch_size, runtime.world_size)
     num_workers = int(config.get("num_workers", 8))
     data_root = config["data_root"]
-    seed = config.get("seed", 42)
+    seed = int(config.get("seed", 42))
     train_transform, train_data_config = build_finetune_train_transform(model)
-    val_transform, val_data_config = build_timm_eval_transform(model)
+    val_transform, val_data_config = build_timm_eval_transform(unwrap_model(model))
+    loader_kwargs = {
+        "distributed": runtime.is_distributed,
+        "rank": runtime.rank,
+        "world_size": runtime.world_size,
+        "pin_memory": True,
+        "persistent_workers": True,
+    }
     train_loader = get_loader(
         dataset_name=dataset,
-        batch_size=batch_size,
+        batch_size=local_batch_size,
         mode="supervised",
         train=True,
         shuffle=True,
         drop_last=True,
         num_workers=num_workers,
         data_root=data_root,
-        generator=build_seeded_generator(seed),
+        generator=build_seeded_generator(seed + runtime.rank),
         worker_init_fn=seed_worker,
         transform=train_transform,
         repeat_aug_reps=int(config.get("repeated_augmentation_reps", 3)),
-        pin_memory=True,
-        persistent_workers=True,
+        **loader_kwargs,
     )
     val_loader = get_loader(
         dataset_name=dataset,
-        batch_size=batch_size,
+        batch_size=local_batch_size,
         mode="test",
         train=False,
         shuffle=False,
@@ -101,8 +162,7 @@ def build_finetune_loaders(config, model):
         num_workers=num_workers,
         data_root=data_root,
         transform=val_transform,
-        pin_memory=True,
-        persistent_workers=True,
+        **loader_kwargs,
     )
     return train_loader, val_loader, {
         "train": {
@@ -114,6 +174,9 @@ def build_finetune_loaders(config, model):
             "repeated_augmentation_reps": int(config.get("repeated_augmentation_reps", 3)),
         },
         "validation": {"preset": "timm_pretrained", "data_config": dict(val_data_config)},
+        "global_batch_size": global_batch_size,
+        "local_batch_size": local_batch_size,
+        "world_size": runtime.world_size,
     }
 
 
@@ -126,15 +189,23 @@ def build_mixup(config):
     )
 
 
-def train_one_epoch(model, loader, optimizer, mixup_fn, device, max_batches=None):
+def _reduce_totals(totals, runtime):
+    values = torch.tensor(totals, dtype=torch.float64, device=runtime.device)
+    if runtime.is_distributed:
+        dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    return values.tolist()
+
+
+def train_one_epoch(model, loader, optimizer, mixup_fn, runtime, max_batches=None):
     model.train()
     total_loss = 0.0
+    total_examples = 0
     total_batches = 0
     for batch_index, (images, labels) in enumerate(loader):
         if max_batches is not None and batch_index >= max_batches:
             break
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+        images = images.to(runtime.device, non_blocking=True)
+        labels = labels.to(runtime.device, non_blocking=True)
         images, labels = mixup_fn(images, labels)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -142,18 +213,44 @@ def train_one_epoch(model, loader, optimizer, mixup_fn, device, max_batches=None
             loss = F.cross_entropy(logits, labels)
         loss.backward()
         optimizer.step()
-        total_loss += float(loss.detach().item())
+        total_loss += float(loss.detach().item()) * images.size(0)
+        total_examples += images.size(0)
         total_batches += 1
     if total_batches == 0:
         raise ValueError("No training batches were processed.")
-    return {"loss": total_loss / total_batches, "batches": total_batches}
+    total_loss, total_examples = _reduce_totals((total_loss, total_examples), runtime)
+    # Every rank executes the same number of optimizer updates. Keep this as
+    # the local count rather than summing ranks, so the metric means updates
+    # per epoch in both single-GPU and DDP runs.
+    return {"loss": total_loss / total_examples, "batches": total_batches}
+
+
+@torch.no_grad()
+def evaluate_finetune_classifier(model, loader, runtime, max_batches=None):
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    for batch_index, (images, labels) in enumerate(loader):
+        if max_batches is not None and batch_index >= max_batches:
+            break
+        images = images.to(runtime.device, non_blocking=True)
+        labels = labels.to(runtime.device, non_blocking=True)
+        logits = model(images)
+        total_loss += float(F.cross_entropy(logits, labels, reduction="sum").item())
+        correct += int((logits.argmax(dim=1) == labels).sum().item())
+        total += labels.size(0)
+    if total == 0:
+        raise ValueError("No evaluation batches were processed.")
+    total_loss, correct, total = _reduce_totals((total_loss, correct, total), runtime)
+    return {"loss": total_loss / total, "acc": 100.0 * correct / total}
 
 
 def checkpoint_payload(*, artifact_path, model, optimizer, scheduler, epoch, best_top1, config, history, transform_metadata):
     return {
         "checkpoint_type": "pruned_full_finetune",
         "artifact_path": str(artifact_path),
-        "model": model.state_dict(),
+        "model": unwrap_model(model).state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "epoch": int(epoch),
@@ -182,10 +279,7 @@ def load_resume_checkpoint(resume_path, device):
 
 
 def validate_resume_config(config, checkpoint):
-    """Prevent resuming a cosine schedule with a different total epoch count."""
-
-    saved_config = checkpoint.get("config", {})
-    saved_epochs = saved_config.get("epochs")
+    saved_epochs = checkpoint.get("config", {}).get("epochs")
     if saved_epochs is None:
         raise ValueError("Resume checkpoint is missing its original epochs setting.")
     if int(config["epochs"]) != int(saved_epochs):
@@ -201,36 +295,48 @@ def _write_json(path, value):
         json.dump(value, file, indent=2)
 
 
-def run_finetune(config, device="cuda", resume_path=None):
-    if device != "cuda" or not torch.cuda.is_available():
-        raise RuntimeError("Pruned ImageNet fine-tuning requires a CUDA GPU.")
+def _prepare_output_dir(output_dir, resume_path, runtime):
+    output_dir = Path(output_dir)
+    error = 0
+    if runtime.is_main_process:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if not resume_path and any(
+            path.exists() for path in (output_dir / "metrics.jsonl", output_dir / "latest.pth", output_dir / "best.pth")
+        ):
+            error = 1
+    error = int(_reduce_totals((error,), runtime)[0])
+    if error:
+        raise FileExistsError(
+            f"Output directory already contains a fine-tuning run: {output_dir}. "
+            "Choose a new --output-dir or pass --resume."
+        )
+    if runtime.is_distributed:
+        dist.barrier()
+    return output_dir
+
+
+def run_finetune(config, runtime, resume_path=None):
     config = dict(config)
-    set_seed(config.get("seed", 42))
+    set_seed(int(config.get("seed", 42)) + runtime.rank)
     started_at_kst = kst_now()
     started_at_monotonic = time.perf_counter()
-    output_dir = Path(config["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = _prepare_output_dir(config["output_dir"], resume_path, runtime)
 
     if resume_path:
-        resume, artifact, model = load_resume_checkpoint(resume_path, device)
+        resume, artifact, model = load_resume_checkpoint(resume_path, runtime.device)
         validate_resume_config(config, resume)
-        artifact_path = resume["artifact_path"]
-        start_epoch = int(resume["epoch"])
-        best_top1 = float(resume["best_top1"])
-        history = list(resume.get("history", []))
+        artifact_path, start_epoch = resume["artifact_path"], int(resume["epoch"])
+        best_top1, history = float(resume["best_top1"]), list(resume.get("history", []))
     else:
         artifact_path = config["artifact_path"]
-        artifact, model = _artifact_model(artifact_path, device)
-        start_epoch = 0
-        best_top1 = float("-inf")
-        history = []
+        artifact, model = _artifact_model(artifact_path, runtime.device)
+        start_epoch, best_top1, history = 0, float("-inf"), []
 
     set_drop_path(model, config.get("drop_path", 0.0))
-    train_loader, val_loader, transform_metadata = build_finetune_loaders(config, model)
-    optimizer = load_optimizer(
-        "AdamW", model, float(config.get("learning_rate", 3e-4)),
-        float(config.get("weight_decay", 0.05)),
-    )
+    if runtime.is_distributed:
+        model = DistributedDataParallel(model, device_ids=[runtime.local_rank], output_device=runtime.local_rank)
+    train_loader, val_loader, transform_metadata = build_finetune_loaders(config, model, runtime)
+    optimizer = load_optimizer("AdamW", model, float(config.get("learning_rate", 3e-4)), float(config.get("weight_decay", 0.05)))
     scheduler = load_scheduler("CosineAnnealingLR", optimizer, int(config["epochs"]), 0)
     if resume_path:
         optimizer.load_state_dict(resume["optimizer"])
@@ -243,23 +349,14 @@ def run_finetune(config, device="cuda", resume_path=None):
         raise ValueError(f"Resume checkpoint starts at epoch {start_epoch}, but epochs={epochs}.")
 
     metrics_path = output_dir / "metrics.jsonl"
-    if not resume_path and any(
-        path.exists() for path in (metrics_path, output_dir / "latest.pth", output_dir / "best.pth")
-    ):
-        raise FileExistsError(
-            f"Output directory already contains a fine-tuning run: {output_dir}. "
-            "Choose a new --output-dir or pass --resume."
-        )
-    with open(metrics_path, "a") as metrics_file:
-        for epoch in range(start_epoch, epochs):
-            if hasattr(train_loader.sampler, "set_epoch"):
-                train_loader.sampler.set_epoch(int(config.get("seed", 0)) + epoch)
-            epoch_learning_rate = optimizer.param_groups[0]["lr"]
-            train_metrics = train_one_epoch(
-                model, train_loader, optimizer, mixup_fn, device, max_train_batches,
-            )
-            val_metrics = evaluate_classifier(model, val_loader, device, max_batches=max_val_batches)
-            scheduler.step()
+    for epoch in range(start_epoch, epochs):
+        if hasattr(train_loader.sampler, "set_epoch"):
+            train_loader.sampler.set_epoch(int(config.get("seed", 0)) + epoch)
+        epoch_learning_rate = optimizer.param_groups[0]["lr"]
+        train_metrics = train_one_epoch(model, train_loader, optimizer, mixup_fn, runtime, max_train_batches)
+        val_metrics = evaluate_finetune_classifier(model, val_loader, runtime, max_val_batches)
+        scheduler.step()
+        if runtime.is_main_process:
             record = {
                 "epoch": epoch + 1,
                 "completed_at_kst": kst_now(),
@@ -270,30 +367,24 @@ def run_finetune(config, device="cuda", resume_path=None):
                 "top1": val_metrics["acc"],
             }
             history.append(record)
-            metrics_file.write(json.dumps(record) + "\n")
-            metrics_file.flush()
+            with open(metrics_path, "a") as metrics_file:
+                metrics_file.write(json.dumps(record) + "\n")
             payload_args = dict(
-                artifact_path=artifact_path,
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                epoch=epoch + 1,
-                best_top1=max(best_top1, val_metrics["acc"]),
-                config=config,
-                history=history,
-                transform_metadata=transform_metadata,
+                artifact_path=artifact_path, model=model, optimizer=optimizer, scheduler=scheduler,
+                epoch=epoch + 1, best_top1=max(best_top1, val_metrics["acc"]), config=config,
+                history=history, transform_metadata=transform_metadata,
             )
             save_checkpoint(output_dir / "latest.pth", **payload_args)
             if val_metrics["acc"] > best_top1:
                 best_top1 = val_metrics["acc"]
                 payload_args["best_top1"] = best_top1
                 save_checkpoint(output_dir / "best.pth", **payload_args)
-            print(
-                f"[FineTune] epoch {epoch + 1}/{epochs} "
-                f"train_loss={record['train_loss']:.4f} "
-                f"val_loss={record['validation_loss']:.4f} top1={record['top1']:.3f}%"
-            )
+            print(f"[FineTune] epoch {epoch + 1}/{epochs} train_loss={record['train_loss']:.4f} val_loss={record['validation_loss']:.4f} top1={record['top1']:.3f}%")
+        if runtime.is_distributed:
+            dist.barrier()
 
+    if not runtime.is_main_process:
+        return None
     summary = {
         "artifact_path": str(artifact_path),
         "pruning_only_top1": float(config.get("pruning_only_top1", 14.042)),
@@ -304,6 +395,9 @@ def run_finetune(config, device="cuda", resume_path=None):
         "started_at_kst": started_at_kst,
         "completed_at_kst": kst_now(),
         "elapsed_seconds": time.perf_counter() - started_at_monotonic,
+        "world_size": runtime.world_size,
+        "global_batch_size": int(config["batch_size"]),
+        "local_batch_size": resolve_local_batch_size(config["batch_size"], runtime.world_size),
         "transform_metadata": transform_metadata,
         "config": config,
         "pruning_config": artifact.get("pruning_config", {}),
