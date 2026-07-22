@@ -47,6 +47,7 @@ from pruning.structured_core import (
     normalize_pruning_modules as _normalize_pruning_modules,
     normalize_target_block_indices as _normalize_target_block_indices,
 )
+from pruning.isomorphic import prune_model_isomorphic
 
 
 def prune_model(
@@ -59,6 +60,9 @@ def prune_model(
     pruning_ratio=0.2,
     mlp_pruning_ratio=0.4,
     head_pruning_ratio=0.4,
+    isomorphic_pruning_ratio=0.2,
+    isomorphic_head_pruning_ratio=0.2,
+    isomorphic_head_dim_pruning_ratio=None,
     pruning_modules=None,
     target_block_indices=None,
     iterative_steps=1,
@@ -114,6 +118,32 @@ def prune_model(
 
     model = model.to(device)
     model.eval()
+
+    # Keep the paper method in its own package.  This early dispatch makes the
+    # legacy magnitude/Taylor/gate/joint paths below byte-for-byte independent
+    # of Isomorphic Pruning's GroupTaylor and DependencyGraph policy.
+    if (importance or "").strip().lower() == "isomorphic_taylor":
+        return prune_model_isomorphic(
+            model=model,
+            model_config=model_config,
+            source_info=source_info,
+            output_dir=output_dir,
+            output_path=output_path,
+            calibration_dataset=calibration_dataset,
+            calibration_batch_size=calibration_batch_size,
+            calibration_batches=calibration_batches,
+            calibration_split=calibration_split,
+            calibration_seed=calibration_seed,
+            calibration_transform=calibration_transform,
+            num_workers=num_workers,
+            data_root=data_root,
+            isomorphic_pruning_ratio=isomorphic_pruning_ratio,
+            isomorphic_head_pruning_ratio=isomorphic_head_pruning_ratio,
+            isomorphic_head_dim_pruning_ratio=isomorphic_head_dim_pruning_ratio,
+            round_to=round_to,
+            inspect_groups=inspect_groups,
+            device=device,
+        )
 
     # Torch-Pruning needs a representative input shape to trace the model and
     # build a dependency graph. The values are random because pruning only needs

@@ -1,0 +1,28 @@
+# Isomorphic Pruning (ECCV 2024) on the same CIFAR-100 LoRA baseline used by
+# the joint MLP+head experiment.  The method itself uses upstream GroupTaylor
+# and graph-discovered isomorphic scopes; recovery remains our 20-epoch LoRA
+# protocol and is configured separately after MAC matching.
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_cifar100_supervised/0511-224807/best_cls_ckpt.pth
+
+importance: isomorphic_taylor
+# Initial MAC-matching candidate.  It prunes all graph-discovered ViT scopes,
+# plus entire heads and head dimensions; the smoke run records the exact MACs.
+isomorphic_pruning_ratio: 0.22
+isomorphic_head_pruning_ratio: 0.22
+isomorphic_head_dim_pruning_ratio: 0.10
+round_to: 2
+
+calibration_dataset: cifar100
+calibration_split: train
+calibration_transform: default
+calibration_batch_size: 64
+# Match the joint baseline's calibration data budget for a controlled method
+# comparison: all 50,000 CIFAR-100 training examples (782 batches at batch 64).
+calibration_batches: full
+calibration_seed: 42
+num_workers: 4
+data_root: ./data
+
+output_dir: ./pruned/vit_base_cifar100_lora50_isomorphic_target_macs
+inspect_groups: true
