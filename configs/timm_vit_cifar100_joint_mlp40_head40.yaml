@@ -1,0 +1,22 @@
+source_type: checkpoint
+checkpoint_path: ./runs/timm_lora_cifar100_supervised/0511-224807/best_cls_ckpt.pth
+
+importance: joint_gate_taylor
+pruning_modules: mlp,head
+global_pruning: true
+iterative_steps: 1
+mlp_pruning_ratio: 0.4
+head_pruning_ratio: 0.4
+round_to: 8
+
+calibration_dataset: cifar100
+calibration_split: train
+calibration_transform: default
+calibration_batch_size: 64
+calibration_batches: full
+calibration_seed: 42
+num_workers: 4
+data_root: ./data
+
+output_dir: ./pruned/vit_base_cifar100_lora50_joint_mlp40_head40
+inspect_groups: true
