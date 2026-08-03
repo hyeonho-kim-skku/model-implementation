@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
 
+from .layerwise_prompts import (
+    LayerwisePromptTokens,
+    normalize_prompt_tokens_per_layer,
+)
 from pruning.eval import load_pruned_artifact
 
 
@@ -18,6 +22,8 @@ class TIMMPrunedVPT(nn.Module):
         reset_classifier=True,
         num_classes=None,
         prompt_init_std=0.02,
+        prompt_tokens_per_layer=None,
+        prompt_allocation_label=None,
     ):
         super().__init__()
         if artifact_path is None:
@@ -27,7 +33,11 @@ class TIMMPrunedVPT(nn.Module):
                 f"prompt_mode must be one of {sorted(VALID_PROMPT_MODES)}, "
                 f"got {prompt_mode!r}."
             )
-        if num_prompt_tokens is None or int(num_prompt_tokens) <= 0:
+        if prompt_tokens_per_layer is not None and prompt_mode != "deep":
+            raise ValueError("prompt_tokens_per_layer is supported only in deep mode.")
+        if prompt_tokens_per_layer is None and (
+            num_prompt_tokens is None or int(num_prompt_tokens) <= 0
+        ):
             raise ValueError("num_prompt_tokens must be greater than 0.")
         if float(prompt_init_std) <= 0:
             raise ValueError("prompt_init_std must be greater than 0.")
@@ -36,14 +46,23 @@ class TIMMPrunedVPT(nn.Module):
         self.artifact = load_pruned_artifact(artifact_path)
         self.model = self.artifact["model"]
         self.prompt_mode = prompt_mode
-        self.num_prompt_tokens = int(num_prompt_tokens)
+        # The scalar is only a fallback when no explicit layer-wise allocation
+        # is supplied. Keep a serializable value in explicit mode as well.
+        self.num_prompt_tokens = (
+            int(num_prompt_tokens) if num_prompt_tokens is not None else 1
+        )
         self.prompt_init_std = float(prompt_init_std)
+        self.prompt_allocation_label = prompt_allocation_label
         self.reset_classifier = bool(reset_classifier)
         self.model_config = self.artifact.get("model_config")
         self.source_pruning_config = self.artifact.get("pruning_config")
         self.source_pruning_stats = self.artifact.get("pruning_stats")
 
         self._validate_encoder()
+        self.prompt_tokens_per_layer = normalize_prompt_tokens_per_layer(
+            prompt_tokens_per_layer,
+            self.num_blocks,
+        )
         self._freeze_source_model()
         if self.reset_classifier:
             self._reset_classifier(num_classes)
@@ -55,6 +74,13 @@ class TIMMPrunedVPT(nn.Module):
         print(f"[TIMMPrunedVPT] artifact: {artifact_path}")
         print(f"[TIMMPrunedVPT] prompt mode: {self.prompt_mode}")
         print(f"[TIMMPrunedVPT] prompt tokens: {self.num_prompt_tokens}")
+        print(
+            "[TIMMPrunedVPT] prompt tokens per layer: "
+            f"{list(self.resolved_prompt_tokens_per_layer)}"
+        )
+        print(f"[TIMMPrunedVPT] total prompt tokens: {self.total_prompt_tokens}")
+        if self.prompt_allocation_label:
+            print(f"[TIMMPrunedVPT] allocation label: {self.prompt_allocation_label}")
         print(f"[TIMMPrunedVPT] reset classifier: {self.reset_classifier}")
         print(
             f"[TIMMPrunedVPT] trainable params: {trainable_params:,} / "
@@ -119,7 +145,7 @@ class TIMMPrunedVPT(nn.Module):
             self.prompt_embeddings = nn.Parameter(
                 torch.empty(1, self.num_prompt_tokens, self.embed_dim)
             )
-        else:
+        elif self.prompt_tokens_per_layer is None:
             self.deep_prompt_embeddings = nn.Parameter(
                 torch.empty(
                     self.num_blocks,
@@ -127,13 +153,34 @@ class TIMMPrunedVPT(nn.Module):
                     self.embed_dim,
                 )
             )
-        nn.init.trunc_normal_(self.prompt_parameters, std=self.prompt_init_std)
+        else:
+            self.layerwise_prompts = LayerwisePromptTokens(
+                token_counts=self.prompt_tokens_per_layer,
+                embedding_dim=self.embed_dim,
+                init_std=self.prompt_init_std,
+            )
+        if self.prompt_mode == "shallow" or self.prompt_tokens_per_layer is None:
+            nn.init.trunc_normal_(self.prompt_parameters, std=self.prompt_init_std)
 
     @property
     def prompt_parameters(self):
         if self.prompt_mode == "shallow":
             return self.prompt_embeddings
+        if self.prompt_tokens_per_layer is not None:
+            return self.layerwise_prompts.parameters()
         return self.deep_prompt_embeddings
+
+    @property
+    def resolved_prompt_tokens_per_layer(self):
+        if self.prompt_mode == "shallow":
+            return (self.num_prompt_tokens,)
+        if self.prompt_tokens_per_layer is not None:
+            return self.prompt_tokens_per_layer
+        return (self.num_prompt_tokens,) * self.num_blocks
+
+    @property
+    def total_prompt_tokens(self):
+        return sum(self.resolved_prompt_tokens_per_layer)
 
     def _embed_images(self, images):
         x = self.encoder.patch_embed(images)
@@ -147,9 +194,11 @@ class TIMMPrunedVPT(nn.Module):
         prompt = prompt.expand(x.shape[0], -1, -1)
         return torch.cat((prefix, prompt, tokens), dim=1)
 
-    def _remove_prompt(self, x):
+    def _remove_prompt(self, x, num_prompt_tokens=None):
+        if num_prompt_tokens is None:
+            num_prompt_tokens = self.num_prompt_tokens
         prefix = x[:, : self.num_prefix_tokens]
-        tokens = x[:, self.num_prefix_tokens + self.num_prompt_tokens :]
+        tokens = x[:, self.num_prefix_tokens + num_prompt_tokens :]
         return torch.cat((prefix, tokens), dim=1)
 
     def _forward_shallow(self, x):
@@ -160,10 +209,16 @@ class TIMMPrunedVPT(nn.Module):
 
     def _forward_deep(self, x):
         for block_idx, block in enumerate(self.encoder.blocks):
-            prompt = self.deep_prompt_embeddings[block_idx].unsqueeze(0)
-            x = self._insert_prompt(x, prompt)
+            if self.prompt_tokens_per_layer is None:
+                prompt = self.deep_prompt_embeddings[block_idx].unsqueeze(0)
+            else:
+                prompt = self.layerwise_prompts.prompt_for_layer(block_idx)
+            num_prompt_tokens = prompt.shape[1]
+            if num_prompt_tokens:
+                x = self._insert_prompt(x, prompt)
             x = block(x)
-            x = self._remove_prompt(x)
+            if num_prompt_tokens:
+                x = self._remove_prompt(x, num_prompt_tokens)
         return x
 
     def train(self, mode=True):
@@ -201,6 +256,18 @@ class TIMMPrunedVPT(nn.Module):
             "artifact_path": self.artifact_path,
             "prompt_mode": self.prompt_mode,
             "num_prompt_tokens": self.num_prompt_tokens,
+            # Keep None for scalar deep prompts so their legacy parameter layout
+            # is reconstructed exactly when loading old or new checkpoints.
+            "prompt_tokens_per_layer": (
+                list(self.prompt_tokens_per_layer)
+                if self.prompt_tokens_per_layer is not None
+                else None
+            ),
+            "resolved_prompt_tokens_per_layer": list(
+                self.resolved_prompt_tokens_per_layer
+            ),
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "prompt_allocation_label": self.prompt_allocation_label,
             "prompt_init_std": self.prompt_init_std,
             "reset_classifier": self.reset_classifier,
             "num_classes": self.model.classifier.out_features,

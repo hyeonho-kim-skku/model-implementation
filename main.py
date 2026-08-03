@@ -24,6 +24,10 @@ def _main(args):
 
     model = load_model(**vars(args))
     model.to(device)
+    if args.profile_macs:
+        from engine.profiling import profile_model_macs
+
+        profile_model_macs(model, device)
 
     # trainloader, testloader = load_dataset(args.dataset, args.batch_size)
     train_generator = build_seeded_generator(args.seed)
@@ -134,7 +138,10 @@ if __name__ == "__main__":
     parser.add_argument('--reset-classifier', dest='reset_classifier', action=argparse.BooleanOptionalAction, default=False, help='Replace the classifier head when loading a pruned artifact')
     parser.add_argument('--prompt-mode', dest='prompt_mode', choices=['shallow', 'deep'], default='shallow', help='Visual prompt placement for timm_pruned_vpt')
     parser.add_argument('--num-prompt-tokens', dest='num_prompt_tokens', type=int, default=1, help='Number of visual prompt tokens per prompted layer')
+    parser.add_argument('--prompt-tokens-per-layer', dest='prompt_tokens_per_layer', type=str, default=None, help='Comma-separated deep prompt token counts, one per transformer block')
+    parser.add_argument('--prompt-allocation-label', dest='prompt_allocation_label', type=str, default=None, help='Label recorded for the prompt allocation strategy')
     parser.add_argument('--prompt-init-std', dest='prompt_init_std', type=float, default=0.02, help='Truncated-normal initialization std for visual prompts')
+    parser.add_argument('--profile-macs', dest='profile_macs', action='store_true', help='Profile and log one-image model MACs before training')
     parser.add_argument('--disable-progress', dest='disable_progress', action='store_true', help='Disable tqdm progress bars for cleaner batch logs')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for training reproducibility')
 

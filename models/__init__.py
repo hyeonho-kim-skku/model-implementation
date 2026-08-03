@@ -94,4 +94,6 @@ def load_model(**kwargs):
             reset_classifier=kwargs.get('reset_classifier', True),
             num_classes=kwargs.get('num_classes'),
             prompt_init_std=kwargs.get('prompt_init_std', 0.02),
+            prompt_tokens_per_layer=kwargs.get('prompt_tokens_per_layer'),
+            prompt_allocation_label=kwargs.get('prompt_allocation_label'),
         )
