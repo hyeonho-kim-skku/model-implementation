@@ -53,6 +53,8 @@ from pruning.isomorphic import prune_model_isomorphic
 
 @dataclass(frozen=True)
 class _CalibrationConfig:
+    """Dataset, objective, and loader settings shared by Taylor collectors."""
+
     dataset: str | None
     batch_size: int
     batches: int | None
@@ -87,6 +89,8 @@ class _CalibrationConfig:
 
 @dataclass(frozen=True)
 class _HeadPruningConfig:
+    """Settings used only by explicit whole-attention-head pruning."""
+
     target_block_indices: tuple[int, ...] | None
     pruning_ratio: float
     global_pruning: bool
@@ -99,6 +103,8 @@ class _HeadPruningConfig:
 
 @dataclass(frozen=True)
 class _StandardPruningConfig:
+    """Settings consumed by the Torch-Pruning BasePruner path."""
+
     importance: str
     pruning_ratio: float
     pruning_modules: tuple[str, ...]
@@ -114,6 +120,8 @@ class _StandardPruningConfig:
 
 @dataclass
 class _TaylorState:
+    """Precomputed or newly collected Taylor scores for the current run."""
+
     use_existing: bool
     existing_calibration_config: dict | None
     activation: dict | None = None
@@ -123,6 +131,8 @@ class _TaylorState:
 
 @dataclass
 class _PruningExecutionResult:
+    """Outputs shared by standard, whole-head, and joint pruning paths."""
+
     calibration_config: dict | None = None
     selected_attention_heads: dict | None = None
     direct_head_pruning_metadata: dict | None = None
@@ -363,6 +373,7 @@ def prune_model(
       removed from the same dense source model.
     """
 
+    # Prepare the dense model and capture the structure used for comparison.
     model = model.to(device)
     model.eval()
 
@@ -438,6 +449,7 @@ def prune_model(
         head_pruning_ratio = joint_settings.head_pruning_ratio
         round_to = joint_settings.round_to
 
+    # Validate method-specific settings and initialize reusable Taylor state.
     importance_group_reduction = (
         None if importance_type == "head_gate_taylor" else "mean"
     )
@@ -547,6 +559,7 @@ def prune_model(
         data_root=data_root,
         device=device,
     )
+    # Execute exactly one pruning strategy.
     execution_result = _PruningExecutionResult()
     if normalized_modules:
         if joint_gate_taylor:
@@ -593,11 +606,11 @@ def prune_model(
                 aggregation=head_gate_taylor_aggregation,
             )
             execution_result = _run_direct_head_pruning(
-                model,
-                example_inputs,
-                head_config,
-                calibration,
-                taylor_state,
+                model=model,
+                example_inputs=example_inputs,
+                config=head_config,
+                calibration=calibration,
+                state=taylor_state,
             )
         else:
             standard_config = _StandardPruningConfig(
@@ -614,13 +627,15 @@ def prune_model(
                 gate_aggregation=gate_taylor_aggregation,
             )
             execution_result = _run_standard_pruning(
-                model,
-                example_inputs,
-                standard_config,
-                calibration,
-                taylor_state,
-                attention_metadata_before,
+                model=model,
+                example_inputs=example_inputs,
+                config=standard_config,
+                calibration=calibration,
+                state=taylor_state,
+                attention_metadata_before=attention_metadata_before,
             )
+
+    # Validate the pruned structure and package the final artifact.
     # Taylor pruning leaves calibration gradients on parameters. They are useful
     # only while pruner.step() is choosing channels, so clear them before saving.
     model.zero_grad(set_to_none=True)
