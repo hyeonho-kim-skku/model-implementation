@@ -2,6 +2,8 @@
 
 This is a working research notebook for the ViT-Base LoRA MLP pruning study. It is meant to help future chats and future me understand the reasoning, not just the final numbers. Use CSVs, `results.jsonl`, `command.txt`, and `args.json` as the exact source of truth.
 
+The completed Joint-versus-Isomorphic CIFAR-100 comparison and the separate DeiT-S/ImageNet validation are summarized in [`joint_isomorphic_comparison.md`](joint_isomorphic_comparison.md). That snapshot also defines the scope of the claims and explains why matched GroupTaylor is not part of the required comparison.
+
 ## Current Research Question
 
 Can gate Taylor importance identify MLP pruning structures that are recoverable for ViT-Base LoRA fine-tuned models?
