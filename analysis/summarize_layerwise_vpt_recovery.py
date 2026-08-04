@@ -27,6 +27,11 @@ def parse_args():
     parser.add_argument("--log-dir", required=True)
     parser.add_argument("--dataset", default="cifar100")
     parser.add_argument(
+        "--datasets",
+        default=None,
+        help="Comma-separated datasets for <dataset>__<allocation>.log files.",
+    )
+    parser.add_argument(
         "--reference-csv",
         default="figures/head_gate_taylor_meeting/recovery_reset_comparison.csv",
     )
@@ -99,26 +104,47 @@ def parse_log(path):
     }
 
 
+def discover_runs(log_dir, dataset=None, datasets=None):
+    if datasets is None:
+        paths = sorted(log_dir.glob("*.log"))
+        return [(dataset, path) for path in paths]
+
+    selected = tuple(item.strip() for item in datasets.split(",") if item.strip())
+    if not selected:
+        raise ValueError("--datasets must include at least one dataset.")
+    runs = []
+    for dataset_name in selected:
+        paths = sorted(log_dir.glob(f"{dataset_name}__*.log"))
+        if not paths:
+            raise FileNotFoundError(
+                f"No recovery logs found for {dataset_name} in {log_dir}."
+            )
+        runs.extend((dataset_name, path) for path in paths)
+    return runs
+
+
 def main():
     args = parse_args()
     log_dir = Path(args.log_dir)
-    log_paths = sorted(log_dir.glob("*.log"))
-    if not log_paths:
+    runs = discover_runs(log_dir, dataset=args.dataset, datasets=args.datasets)
+    if not runs:
         raise FileNotFoundError(f"No .log files found in {log_dir}.")
 
-    reference = load_reference(args.reference_csv, args.dataset)
     rows = []
-    for log_path in log_paths:
+    for dataset, log_path in runs:
+        reference = load_reference(args.reference_csv, dataset)
         metrics = parse_log(log_path)
         rows.append(
             {
-                "dataset": args.dataset,
+                "dataset": dataset,
                 **metrics,
                 **reference,
-                "recovery_gain": metrics["best_acc"]
-                - reference["pruning_only_acc"],
-                "vs_reset_lora": metrics["best_acc"]
-                - reference["reset_lora_best_acc"],
+                "recovery_gain": round(
+                    metrics["best_acc"] - reference["pruning_only_acc"], 4
+                ),
+                "vs_reset_lora": round(
+                    metrics["best_acc"] - reference["reset_lora_best_acc"], 4
+                ),
                 "log_path": str(log_path),
             }
         )
