@@ -12,7 +12,7 @@ from .timm_classifier import TIMMClassifier
 from .timm_lora import TIMMLoRA
 from .timm_pruned_linear_probe import TIMMPrunedLinearProbe
 from .timm_pruned_lora import TIMMPrunedLoRA
-from .timm_pruned_vpt import TIMMPrunedVPT
+from .timm_pruned_prompt import TIMMPrunedPromptRecovery, TIMMPrunedVPT
 
 def load_model(**kwargs):
     model = kwargs.get('model')
@@ -95,5 +95,19 @@ def load_model(**kwargs):
             num_classes=kwargs.get('num_classes'),
             prompt_init_std=kwargs.get('prompt_init_std', 0.02),
             prompt_tokens_per_layer=kwargs.get('prompt_tokens_per_layer'),
+            prompt_allocation_label=kwargs.get('prompt_allocation_label'),
+        )
+    elif model == 'timm_pruned_prompt':
+        return TIMMPrunedPromptRecovery(
+            artifact_path=kwargs.get('artifact_path'),
+            prompt_components=kwargs.get('prompt_components', 'kv'),
+            prompt_mode=kwargs.get('prompt_mode', 'deep'),
+            num_prompt_tokens=kwargs.get('num_prompt_tokens', 1),
+            reset_classifier=kwargs.get('reset_classifier', True),
+            num_classes=kwargs.get('num_classes'),
+            prompt_init_std=kwargs.get('prompt_init_std', 0.02),
+            prompt_tokens_per_layer=kwargs.get('prompt_tokens_per_layer'),
+            num_kv_prompt_tokens=kwargs.get('num_kv_prompt_tokens', 5),
+            kv_prompt_tokens_per_layer=kwargs.get('kv_prompt_tokens_per_layer'),
             prompt_allocation_label=kwargs.get('prompt_allocation_label'),
         )

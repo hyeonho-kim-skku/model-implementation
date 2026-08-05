@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Run selected VPT/KV prompt recovery variants across dataset configs.
+
+set -euo pipefail
+
+PYTHON_BIN="${PYTHON_BIN:-/home/hyeonho/miniconda3/envs/resnet/bin/python}"
+EPOCHS="${EPOCHS:-20}"
+DATASETS="${DATASETS:-cifar100}"
+EXPERIMENTS="${EXPERIMENTS:-kv5,kv8}"
+LOG_DIR="${LOG_DIR:-logs/prompt_recovery_$(date +%Y%m%d_%H%M%S)}"
+
+mkdir -p "$LOG_DIR"
+IFS=',' read -ra selected_datasets <<< "$DATASETS"
+IFS=',' read -ra selected_experiments <<< "$EXPERIMENTS"
+
+for dataset in "${selected_datasets[@]}"; do
+  # The existing VPT config is the shared dataset/artifact/training base;
+  # prompt components and token counts are selected below via CLI overrides.
+  base_config="configs/timm_vit_pruned_vpt_${dataset}.yaml"
+  if [[ ! -f "$base_config" ]]; then
+    echo "Missing config: $base_config" >&2
+    exit 1
+  fi
+  for experiment in "${selected_experiments[@]}"; do
+    common_args=(
+      --config "$base_config"
+      --model timm_pruned_prompt
+      --num-epochs "$EPOCHS"
+      --reset-classifier
+      --profile-macs
+      --disable-progress
+    )
+    case "$experiment" in
+      vpt5)
+        experiment_args=(
+          --prompt-components vpt
+          --prompt-mode deep
+          --num-prompt-tokens 5
+          --prompt-allocation-label vpt-uniform-5
+        )
+        ;;
+      vpt_head_proportional)
+        head_proportional_schedule="$($PYTHON_BIN -c \
+          'import sys, yaml; c=yaml.safe_load(open(sys.argv[1])); print(",".join(map(str, c["head_proportional_prompt_tokens_per_layer"])))' \
+          "$base_config")"
+        experiment_args=(
+          --prompt-components vpt
+          --prompt-mode deep
+          --prompt-tokens-per-layer "$head_proportional_schedule"
+          --prompt-allocation-label vpt-head-proportional-1to1
+        )
+        ;;
+      kv5)
+        experiment_args=(
+          --prompt-components kv
+          --num-kv-prompt-tokens 5
+          --prompt-allocation-label kv-uniform-5
+        )
+        ;;
+      kv8)
+        experiment_args=(
+          --prompt-components kv
+          --num-kv-prompt-tokens 8
+          --prompt-allocation-label kv-uniform-8
+        )
+        ;;
+      vpt5_kv1)
+        experiment_args=(
+          --prompt-components vpt,kv
+          --prompt-mode deep
+          --num-prompt-tokens 5
+          --num-kv-prompt-tokens 1
+          --prompt-allocation-label vpt5-kv1
+        )
+        ;;
+      vpt5_kv5)
+        experiment_args=(
+          --prompt-components vpt,kv
+          --prompt-mode deep
+          --num-prompt-tokens 5
+          --num-kv-prompt-tokens 5
+          --prompt-allocation-label vpt5-kv5
+        )
+        ;;
+      *)
+        echo "Unknown experiment: $experiment" >&2
+        exit 1
+        ;;
+    esac
+
+    log_path="$LOG_DIR/${dataset}__${experiment}.log"
+    echo "Starting ${dataset}/${experiment}"
+    "$PYTHON_BIN" main.py "${common_args[@]}" "${experiment_args[@]}" \
+      2>&1 | tee "$log_path"
+    echo "Finished ${dataset}/${experiment}"
+  done
+done
+
+"$PYTHON_BIN" analysis/summarize_prompt_recovery.py \
+  --log-dir "$LOG_DIR" \
+  --datasets "$DATASETS" \
+  --output "$LOG_DIR/summary.csv"

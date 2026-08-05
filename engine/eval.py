@@ -85,7 +85,7 @@ def evaluate_merged_checkpoint(
     return checkpoint, metrics, eval_config
 
 
-def evaluate_vpt_checkpoint(
+def evaluate_prompt_checkpoint(
     checkpoint_path,
     device,
     dataset_name=None,
@@ -100,8 +100,9 @@ def evaluate_vpt_checkpoint(
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     model_config = checkpoint.get("model_config")
-    if not model_config or model_config.get("model") != "timm_pruned_vpt":
-        raise ValueError("Checkpoint does not contain a timm_pruned_vpt model_config.")
+    supported_models = {"timm_pruned_vpt", "timm_pruned_prompt"}
+    if not model_config or model_config.get("model") not in supported_models:
+        raise ValueError("Checkpoint does not contain a prompt recovery model_config.")
     model = load_model(**model_config)
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
@@ -128,7 +129,7 @@ def evaluate_vpt_checkpoint(
         "dataset": dataset_name,
         "batch_size": batch_size,
         "split": split,
-        "checkpoint_type": "vpt",
+        "checkpoint_type": "prompt",
     }
 
 
@@ -145,8 +146,8 @@ def evaluate_training_checkpoint(
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     model_config = checkpoint.get("model_config") or {}
-    if model_config.get("model") == "timm_pruned_vpt":
-        return evaluate_vpt_checkpoint(
+    if model_config.get("model") in {"timm_pruned_vpt", "timm_pruned_prompt"}:
+        return evaluate_prompt_checkpoint(
             checkpoint_path=checkpoint_path,
             device=device,
             dataset_name=dataset_name,
