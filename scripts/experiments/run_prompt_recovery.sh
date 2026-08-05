@@ -64,6 +64,14 @@ for dataset in "${selected_datasets[@]}"; do
           --prompt-allocation-label kv-uniform-8
         )
         ;;
+      kv_separate4)
+        experiment_args=(
+          --prompt-components kv
+          --num-kv-prompt-tokens 4
+          --no-share-kv-prompt
+          --prompt-allocation-label kv-separate-uniform-4
+        )
+        ;;
       vpt5_kv1)
         experiment_args=(
           --prompt-components vpt,kv
@@ -80,6 +88,26 @@ for dataset in "${selected_datasets[@]}"; do
           --num-prompt-tokens 5
           --num-kv-prompt-tokens 5
           --prompt-allocation-label vpt5-kv5
+        )
+        ;;
+      vpt5_kv_separate1)
+        experiment_args=(
+          --prompt-components vpt,kv
+          --prompt-mode deep
+          --num-prompt-tokens 5
+          --num-kv-prompt-tokens 1
+          --no-share-kv-prompt
+          --prompt-allocation-label vpt5-kv-separate1
+        )
+        ;;
+      vpt5_kv_separate5)
+        experiment_args=(
+          --prompt-components vpt,kv
+          --prompt-mode deep
+          --num-prompt-tokens 5
+          --num-kv-prompt-tokens 5
+          --no-share-kv-prompt
+          --prompt-allocation-label vpt5-kv-separate5
         )
         ;;
       *)

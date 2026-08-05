@@ -8,14 +8,14 @@ import torch.nn.functional as F
 
 
 class KVPromptedAttention(nn.Module):
-    """Wrap timm ViT attention with a shared learnable K/V prompt.
+    """Wrap timm ViT attention with learnable K/V prompts.
 
     The prompt lives directly in the projected per-head attention space.  It is
     prepended to K and V, while Q and the output sequence length are unchanged.
-    A single parameter is shared by K and V, matching the default E2VPT setup.
+    K and V share one parameter by default, matching the default E2VPT setup.
     """
 
-    def __init__(self, attention, num_prompt_tokens):
+    def __init__(self, attention, num_prompt_tokens, share_key_value=True):
         super().__init__()
         num_prompt_tokens = int(num_prompt_tokens)
         if num_prompt_tokens <= 0:
@@ -74,11 +74,21 @@ class KVPromptedAttention(nn.Module):
         self.fused_attn = bool(attention.fused_attn)
 
         self.num_prompt_tokens = num_prompt_tokens
-        self.kv_prompt = nn.Parameter(
-            torch.empty(self.num_heads, self.num_prompt_tokens, self.head_dim)
-        )
+        self.share_key_value = bool(share_key_value)
+        prompt_shape = (self.num_heads, self.num_prompt_tokens, self.head_dim)
+        if self.share_key_value:
+            self.kv_prompt = nn.Parameter(torch.empty(prompt_shape))
+            self._initialize_prompt(self.kv_prompt)
+        else:
+            self.key_prompt = nn.Parameter(torch.empty(prompt_shape))
+            self.value_prompt = nn.Parameter(torch.empty(prompt_shape))
+            self._initialize_prompt(self.key_prompt)
+            self._initialize_prompt(self.value_prompt)
+
+    @staticmethod
+    def _initialize_prompt(prompt):
         nn.init.kaiming_uniform_(
-            self.kv_prompt,
+            prompt,
             a=0,
             mode="fan_in",
             nonlinearity="leaky_relu",
@@ -86,7 +96,14 @@ class KVPromptedAttention(nn.Module):
 
     @property
     def prompt_parameter_count(self):
-        return self.kv_prompt.numel()
+        if self.share_key_value:
+            return self.kv_prompt.numel()
+        return self.key_prompt.numel() + self.value_prompt.numel()
+
+    def _prompt_pair(self):
+        if self.share_key_value:
+            return self.kv_prompt, self.kv_prompt
+        return self.key_prompt, self.value_prompt
 
     def forward(self, x, attn_mask=None, is_causal=False):
         if attn_mask is not None or is_causal:
@@ -103,9 +120,11 @@ class KVPromptedAttention(nn.Module):
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
-        prompt = self.kv_prompt.unsqueeze(0).expand(batch_size, -1, -1, -1)
-        k = torch.cat((prompt, k), dim=2)
-        v = torch.cat((prompt, v), dim=2)
+        key_prompt, value_prompt = self._prompt_pair()
+        key_prompt = key_prompt.unsqueeze(0).expand(batch_size, -1, -1, -1)
+        value_prompt = value_prompt.unsqueeze(0).expand(batch_size, -1, -1, -1)
+        k = torch.cat((key_prompt, k), dim=2)
+        v = torch.cat((value_prompt, v), dim=2)
 
         if self.fused_attn:
             x = F.scaled_dot_product_attention(
@@ -128,7 +147,7 @@ class KVPromptedAttention(nn.Module):
         return self.proj_drop(x)
 
 
-def inject_kv_prompts(blocks, token_counts):
+def inject_kv_prompts(blocks, token_counts, share_key_value=True):
     """Replace selected block attention modules and return their indices."""
 
     if len(blocks) != len(token_counts):
@@ -141,6 +160,10 @@ def inject_kv_prompts(blocks, token_counts):
             raise ValueError("KV prompt token counts must be non-negative.")
         if count == 0:
             continue
-        block.attn = KVPromptedAttention(block.attn, count)
+        block.attn = KVPromptedAttention(
+            block.attn,
+            count,
+            share_key_value=share_key_value,
+        )
         prompted_layers.append(layer_index)
     return tuple(prompted_layers)

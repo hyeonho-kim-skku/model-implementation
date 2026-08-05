@@ -109,5 +109,6 @@ def load_model(**kwargs):
             prompt_tokens_per_layer=kwargs.get('prompt_tokens_per_layer'),
             num_kv_prompt_tokens=kwargs.get('num_kv_prompt_tokens', 5),
             kv_prompt_tokens_per_layer=kwargs.get('kv_prompt_tokens_per_layer'),
+            share_kv_prompt=kwargs.get('share_kv_prompt', True),
             prompt_allocation_label=kwargs.get('prompt_allocation_label'),
         )

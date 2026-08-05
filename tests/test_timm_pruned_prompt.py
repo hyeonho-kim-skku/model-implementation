@@ -359,6 +359,35 @@ class KVPromptRecoveryTest(unittest.TestCase):
         self.assertIn("qkv.weight", prompted.state_dict())
         self.assertNotIn("attention.qkv.weight", prompted.state_dict())
 
+    def test_attention_supports_separate_key_and_value_prompts(self):
+        attention = Attention(dim=8, num_heads=2, attn_head_dim=4)
+        prompted = KVPromptedAttention(
+            attention,
+            num_prompt_tokens=4,
+            share_key_value=False,
+        )
+        prompted.fused_attn = True
+        captured = {}
+
+        def record_attention(q, k, v, **_kwargs):
+            captured.update(k=k.detach(), v=v.detach())
+            return torch.zeros_like(q)
+
+        with torch.no_grad():
+            prompted.key_prompt.fill_(1.0)
+            prompted.value_prompt.fill_(2.0)
+        with patch(
+            "models.kv_prompt.F.scaled_dot_product_attention",
+            side_effect=record_attention,
+        ):
+            output = prompted(torch.randn(2, 7, 8))
+
+        self.assertEqual(tuple(output.shape), (2, 7, 8))
+        self.assertTrue(torch.equal(captured["k"][:, :, :4], torch.ones(2, 2, 4, 4)))
+        self.assertTrue(torch.equal(captured["v"][:, :, :4], torch.full((2, 2, 4, 4), 2.0)))
+        self.assertEqual(prompted.prompt_parameter_count, 2 * 2 * 4 * 4)
+        self.assertNotIn("kv_prompt", prompted.state_dict())
+
     def test_kv_only_uses_remaining_head_width(self):
         model = self.build_model(num_kv_prompt_tokens=5)
         output = model(torch.randn(2, 3, 4, 4))
@@ -378,6 +407,22 @@ class KVPromptRecoveryTest(unittest.TestCase):
         self.assertEqual(model.kv_prompted_layer_indices, (0, 2))
         self.assertEqual(model.total_kv_prompt_tokens, 3)
         self.assertEqual(model.kv_prompt_parameter_count, 1 * 2 * 4 + 1 * 1 * 4)
+
+    def test_separate_kv4_parameter_matches_shared_kv8(self):
+        shared_kv8 = self.build_model(
+            num_kv_prompt_tokens=8,
+            share_kv_prompt=True,
+        )
+        separate_kv4 = self.build_model(
+            num_kv_prompt_tokens=4,
+            share_kv_prompt=False,
+        )
+
+        self.assertEqual(
+            shared_kv8.kv_prompt_parameter_count,
+            separate_kv4.kv_prompt_parameter_count,
+        )
+        self.assertEqual(separate_kv4.kv_prompt_parameter_count, (1 + 2 + 1) * 4 * 4 * 2)
 
     def test_deep_vpt_and_kv_compose_in_the_same_blocks(self):
         model = self.build_model(
@@ -439,10 +484,54 @@ class KVPromptRecoveryTest(unittest.TestCase):
         config = original.export_config()
         self.assertEqual(config["model"], "timm_pruned_prompt")
         self.assertEqual(config["prompt_components"], ["vpt", "kv"])
+        self.assertTrue(config["share_kv_prompt"])
         self.assertEqual(config["remaining_heads_per_layer"], [1, 2, 1])
         self.assertEqual(config["total_vpt_prompt_tokens"], 6)
         self.assertNotIn("total_prompt_tokens", config)
+        legacy_config = dict(config)
+        legacy_config.pop("share_kv_prompt")
+        legacy_config["kv_share_key_value"] = True
 
+        with patch(
+            "models.timm_pruned_prompt.load_pruned_artifact",
+            return_value=fake_attention_artifact(),
+        ):
+            reconstructed = load_model(**legacy_config)
+        reconstructed.load_state_dict(original.state_dict())
+
+        self.assertEqual(reconstructed.total_vpt_prompt_tokens, 6)
+        self.assertEqual(reconstructed.total_kv_prompt_tokens, 9)
+        for key, value in original.state_dict().items():
+            self.assertTrue(torch.equal(value, reconstructed.state_dict()[key]), key)
+
+    def test_separate_kv_checkpoint_round_trip_and_gradients(self):
+        original = self.build_model(
+            num_kv_prompt_tokens=4,
+            share_kv_prompt=False,
+            prompt_allocation_label="kv-separate-uniform-4",
+        )
+        original.train()
+        original(torch.randn(2, 3, 4, 4)).sum().backward()
+
+        prompted_attentions = [
+            block.attn
+            for block in original.encoder.blocks
+            if isinstance(block.attn, KVPromptedAttention)
+        ]
+        self.assertTrue(all(not attention.share_key_value for attention in prompted_attentions))
+        self.assertTrue(all(attention.key_prompt.grad is not None for attention in prompted_attentions))
+        self.assertTrue(all(attention.value_prompt.grad is not None for attention in prompted_attentions))
+        self.assertTrue(
+            all(
+                parameter.grad is None
+                for attention in prompted_attentions
+                for name, parameter in attention.named_parameters()
+                if name not in {"key_prompt", "value_prompt"}
+            )
+        )
+
+        config = original.export_config()
+        self.assertFalse(config["share_kv_prompt"])
         with patch(
             "models.timm_pruned_prompt.load_pruned_artifact",
             return_value=fake_attention_artifact(),
@@ -450,8 +539,7 @@ class KVPromptRecoveryTest(unittest.TestCase):
             reconstructed = load_model(**config)
         reconstructed.load_state_dict(original.state_dict())
 
-        self.assertEqual(reconstructed.total_vpt_prompt_tokens, 6)
-        self.assertEqual(reconstructed.total_kv_prompt_tokens, 9)
+        self.assertFalse(reconstructed.share_kv_prompt)
         for key, value in original.state_dict().items():
             self.assertTrue(torch.equal(value, reconstructed.state_dict()[key]), key)
 

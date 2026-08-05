@@ -50,6 +50,7 @@ class TIMMPrunedPromptRecovery(nn.Module):
         prompt_tokens_per_layer=None,
         num_kv_prompt_tokens=5,
         kv_prompt_tokens_per_layer=None,
+        share_kv_prompt=True,
         prompt_allocation_label=None,
         model_name="timm_pruned_prompt",
     ):
@@ -68,6 +69,7 @@ class TIMMPrunedPromptRecovery(nn.Module):
         self.num_kv_prompt_tokens = (
             int(num_kv_prompt_tokens) if num_kv_prompt_tokens is not None else 1
         )
+        self.share_kv_prompt = bool(share_kv_prompt)
         self.prompt_init_std = float(prompt_init_std)
         self.prompt_allocation_label = prompt_allocation_label
         self.reset_classifier = bool(reset_classifier)
@@ -192,6 +194,7 @@ class TIMMPrunedPromptRecovery(nn.Module):
         self.kv_prompted_layer_indices = inject_kv_prompts(
             self.encoder.blocks,
             self.resolved_kv_prompt_tokens_per_layer,
+            share_key_value=self.share_kv_prompt,
         )
 
     def _create_vpt_parameters(self):
@@ -386,6 +389,10 @@ class TIMMPrunedPromptRecovery(nn.Module):
                 "[TIMMPrunedPrompt] KV tokens per layer: "
                 f"{list(self.resolved_kv_prompt_tokens_per_layer)}"
             )
+            print(
+                "[TIMMPrunedPrompt] KV prompt sharing: "
+                f"{self.kv_prompt_sharing}"
+            )
             print(f"[TIMMPrunedPrompt] total VPT tokens: {self.total_vpt_prompt_tokens}")
             print(f"[TIMMPrunedPrompt] total KV tokens: {self.total_kv_prompt_tokens}")
             print(
@@ -422,6 +429,7 @@ class TIMMPrunedPromptRecovery(nn.Module):
             ),
             "total_vpt_prompt_tokens": self.total_vpt_prompt_tokens,
             "num_kv_prompt_tokens": self.num_kv_prompt_tokens,
+            "share_kv_prompt": self.share_kv_prompt,
             "kv_prompt_tokens_per_layer": (
                 list(self.kv_prompt_tokens_per_layer)
                 if self.kv_prompt_tokens_per_layer is not None
@@ -433,7 +441,6 @@ class TIMMPrunedPromptRecovery(nn.Module):
             "total_kv_prompt_tokens": self.total_kv_prompt_tokens,
             "vpt_prompt_parameter_count": self.vpt_prompt_parameter_count,
             "kv_prompt_parameter_count": self.kv_prompt_parameter_count,
-            "kv_share_key_value": True,
             "kv_prompt_init": "kaiming_uniform",
             "prompt_allocation_label": self.prompt_allocation_label,
             "prompt_init_std": self.prompt_init_std,
@@ -455,6 +462,12 @@ class TIMMPrunedPromptRecovery(nn.Module):
             )
             config["total_prompt_tokens"] = self.total_vpt_prompt_tokens
         return config
+
+    @property
+    def kv_prompt_sharing(self):
+        if not self.has_kv:
+            return "none"
+        return "shared" if self.share_kv_prompt else "separate"
 
 
 class TIMMPrunedVPT(TIMMPrunedPromptRecovery):

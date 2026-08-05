@@ -32,6 +32,9 @@ VPT_COUNTS_PATTERN = re.compile(
 KV_COUNTS_PATTERN = re.compile(
     r"\[TIMMPrunedPrompt\] KV tokens per layer: \[([^]]*)\]"
 )
+KV_SHARING_PATTERN = re.compile(
+    r"\[TIMMPrunedPrompt\] KV prompt sharing: (none|shared|separate)"
+)
 TOTAL_VPT_PATTERN = re.compile(r"\[TIMMPrunedPrompt\] total VPT tokens: (\d+)")
 TOTAL_KV_PATTERN = re.compile(r"\[TIMMPrunedPrompt\] total KV tokens: (\d+)")
 VPT_PROMPT_PARAMS_PATTERN = re.compile(
@@ -127,6 +130,12 @@ def parse_log(path):
                 KV_PROMPT_PARAMS_PATTERN, text, path, "KV prompt parameters"
             ).group(1)
         )
+        sharing_match = KV_SHARING_PATTERN.search(text)
+        kv_prompt_sharing = (
+            sharing_match.group(1)
+            if sharing_match
+            else ("shared" if "kv" in components.split(",") else "none")
+        )
     else:
         components = "vpt"
         prompt_mode = required_match(
@@ -144,6 +153,7 @@ def parse_log(path):
         total_kv_tokens = 0
         vpt_prompt_params = ""
         kv_prompt_params = 0
+        kv_prompt_sharing = "none"
 
     label_match = LABEL_PATTERN.search(text)
     macs_match = MACS_PATTERN.search(text)
@@ -155,6 +165,7 @@ def parse_log(path):
         "vpt_prompt_mode": prompt_mode,
         "vpt_prompt_tokens_per_layer": ",".join(str(count) for count in vpt_counts),
         "kv_prompt_tokens_per_layer": ",".join(str(count) for count in kv_counts),
+        "kv_prompt_sharing": kv_prompt_sharing,
         "total_vpt_prompt_tokens": total_vpt_tokens,
         "total_kv_prompt_tokens": total_kv_tokens,
         "vpt_prompt_params": vpt_prompt_params,

@@ -56,6 +56,7 @@ class PromptRecoverySummaryTest(unittest.TestCase):
 [TIMMPrunedPrompt] VPT mode: deep
 [TIMMPrunedPrompt] VPT tokens per layer: [5, 5, 5]
 [TIMMPrunedPrompt] KV tokens per layer: [8, 8, 8]
+[TIMMPrunedPrompt] KV prompt sharing: separate
 [TIMMPrunedPrompt] total VPT tokens: 15
 [TIMMPrunedPrompt] total KV tokens: 24
 [TIMMPrunedPrompt] VPT prompt params: 120
@@ -69,14 +70,23 @@ class PromptRecoverySummaryTest(unittest.TestCase):
             path = Path(directory) / "run.log"
             path.write_text(log_text)
             metrics = parse_log(path)
+            path.write_text(
+                log_text.replace(
+                    "[TIMMPrunedPrompt] KV prompt sharing: separate\n",
+                    "",
+                )
+            )
+            legacy_metrics = parse_log(path)
 
         self.assertEqual(metrics["prompt_components"], "vpt,kv")
         self.assertEqual(metrics["vpt_prompt_tokens_per_layer"], "5,5,5")
         self.assertEqual(metrics["kv_prompt_tokens_per_layer"], "8,8,8")
+        self.assertEqual(metrics["kv_prompt_sharing"], "separate")
         self.assertEqual(metrics["total_vpt_prompt_tokens"], 15)
         self.assertEqual(metrics["total_kv_prompt_tokens"], 24)
         self.assertEqual(metrics["vpt_prompt_params"], 120)
         self.assertEqual(metrics["kv_prompt_params"], 128)
+        self.assertEqual(legacy_metrics["kv_prompt_sharing"], "shared")
 
 
 if __name__ == "__main__":
