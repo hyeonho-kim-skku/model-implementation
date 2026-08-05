@@ -1,5 +1,6 @@
 model: timm_pruned_vpt
 artifact_path: ./pruned/vit_base_cifar100_lora50_head_gate_taylor_proj_in_sum_abs_samplewise_global040/artifacts/ratio040/pruned_timm_classifier.pth
+lora_recovery_checkpoint: ./runs/timm_pruned_lora_cifar100_supervised/0701-210504/best_cls_ckpt.pth
 method: supervised
 dataset: cifar100
 mode: supervised

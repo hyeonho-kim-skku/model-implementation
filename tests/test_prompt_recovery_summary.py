@@ -64,6 +64,8 @@ class PromptRecoverySummaryTest(unittest.TestCase):
 [TIMMPrunedPrompt] LoRA enabled: true
 [TIMMPrunedPrompt] LoRA rank: 4
 [TIMMPrunedPrompt] LoRA params: 456
+[TIMMPrunedPrompt] staged recovery: true
+[TIMMPrunedPrompt] initial recovery checkpoint: runs/lora/best_cls_ckpt.pth
 [TIMMPrunedPrompt] allocation label: vpt5-kv8
 [TIMMPrunedPrompt] trainable params: 1,234 / 10,000 (12.34%)
 [ModelProfile] MACs: 9,999
@@ -92,6 +94,10 @@ class PromptRecoverySummaryTest(unittest.TestCase):
         self.assertTrue(metrics["lora_enabled"])
         self.assertEqual(metrics["lora_rank"], 4)
         self.assertEqual(metrics["lora_params"], 456)
+        self.assertTrue(metrics["staged_recovery"])
+        self.assertEqual(
+            metrics["initial_recovery_checkpoint"], "runs/lora/best_cls_ckpt.pth"
+        )
         self.assertEqual(legacy_metrics["kv_prompt_sharing"], "shared")
 
     def test_old_prompt_logs_default_to_no_lora(self):
@@ -110,6 +116,8 @@ class PromptRecoverySummaryTest(unittest.TestCase):
         self.assertFalse(metrics["lora_enabled"])
         self.assertEqual(metrics["lora_rank"], "")
         self.assertEqual(metrics["lora_params"], 0)
+        self.assertFalse(metrics["staged_recovery"])
+        self.assertEqual(metrics["initial_recovery_checkpoint"], "")
 
 
 if __name__ == "__main__":

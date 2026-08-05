@@ -1,5 +1,7 @@
 """Composable prompt recovery for structurally pruned timm ViTs."""
 
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 
@@ -58,6 +60,7 @@ class TIMMPrunedPromptRecovery(nn.Module):
         lora_alpha=None,
         lora_modules=None,
         qkv_lora_components=None,
+        initial_recovery_checkpoint=None,
         model_name="timm_pruned_prompt",
     ):
         super().__init__()
@@ -83,6 +86,9 @@ class TIMMPrunedPromptRecovery(nn.Module):
         self.lora_alpha = lora_alpha
         self.lora_modules = lora_modules
         self.qkv_lora_components = qkv_lora_components
+        self.initial_recovery_checkpoint = initial_recovery_checkpoint
+        self.is_staged_recovery = initial_recovery_checkpoint is not None
+        self._initial_recovery_state = None
         if self.lora_rank is not None and self.lora_rank <= 0:
             raise ValueError("lora_rank must be greater than 0 when LoRA is enabled.")
 
@@ -97,6 +103,7 @@ class TIMMPrunedPromptRecovery(nn.Module):
         self.model_config = self.artifact.get("model_config")
         self.source_pruning_config = self.artifact.get("pruning_config")
         self.source_pruning_stats = self.artifact.get("pruning_stats")
+        self._prepare_initial_recovery_checkpoint()
 
         self._validate_encoder()
         self.prompt_tokens_per_layer = normalize_prompt_tokens_per_layer(
@@ -117,6 +124,7 @@ class TIMMPrunedPromptRecovery(nn.Module):
             self._unfreeze_classifier()
         self._inject_kv_prompt_modules()
         self._inject_lora_modules()
+        self._load_initial_recovery_state()
         self._create_vpt_parameters()
         self._log_configuration()
 
@@ -150,6 +158,80 @@ class TIMMPrunedPromptRecovery(nn.Module):
                 raise ValueError("num_kv_prompt_tokens must be greater than 0.")
         elif kv_prompt_tokens_per_layer is not None:
             raise ValueError("kv_prompt_tokens_per_layer requires the kv component.")
+
+        if self.is_staged_recovery:
+            if self.reset_classifier:
+                raise ValueError(
+                    "initial_recovery_checkpoint requires reset_classifier=False."
+                )
+            if self.prompt_components != ("vpt",):
+                raise ValueError(
+                    "initial_recovery_checkpoint currently supports only the vpt component."
+                )
+
+    @staticmethod
+    def _normalize_recovery_setting(value):
+        if isinstance(value, str):
+            return tuple(item.strip() for item in value.split(",") if item.strip())
+        if isinstance(value, (list, tuple)):
+            return tuple(str(item).strip() for item in value)
+        return value
+
+    def _prepare_initial_recovery_checkpoint(self):
+        if not self.is_staged_recovery:
+            return
+        checkpoint_path = Path(self.initial_recovery_checkpoint)
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Initial recovery checkpoint does not exist: {checkpoint_path}"
+            )
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        checkpoint_config = checkpoint.get("model_config") or {}
+        if checkpoint_config.get("model") != "timm_pruned_lora":
+            raise ValueError(
+                "initial_recovery_checkpoint must be a timm_pruned_lora checkpoint."
+            )
+        if "model" not in checkpoint:
+            raise ValueError("Initial recovery checkpoint does not contain model weights.")
+
+        source_artifact = checkpoint_config.get("source_pruned_artifact_path")
+        if source_artifact is None:
+            raise ValueError(
+                "Initial recovery checkpoint does not record source_pruned_artifact_path."
+            )
+        if Path(source_artifact).resolve() != Path(self.artifact_path).resolve():
+            raise ValueError(
+                "Initial recovery checkpoint source artifact does not match artifact_path."
+            )
+
+        checkpoint_settings = {
+            "lora_rank": checkpoint_config.get("lora_rank"),
+            "lora_alpha": checkpoint_config.get("lora_alpha"),
+            "lora_modules": checkpoint_config.get("lora_modules"),
+            "qkv_lora_components": checkpoint_config.get("qkv_lora_components"),
+        }
+        missing_settings = [
+            name
+            for name in ("lora_rank", "lora_modules", "qkv_lora_components")
+            if checkpoint_settings[name] is None
+        ]
+        if missing_settings:
+            raise ValueError(
+                "Initial recovery checkpoint is missing LoRA metadata: "
+                f"{', '.join(missing_settings)}."
+            )
+        for name, checkpoint_value in checkpoint_settings.items():
+            requested_value = getattr(self, name)
+            if requested_value is not None and (
+                self._normalize_recovery_setting(requested_value)
+                != self._normalize_recovery_setting(checkpoint_value)
+            ):
+                raise ValueError(
+                    f"{name} conflicts with initial recovery checkpoint metadata."
+                )
+            setattr(self, name, checkpoint_value)
+        self.lora_rank = int(self.lora_rank)
+        self._initial_recovery_state = checkpoint["model"]
 
     def _validate_encoder(self):
         if not hasattr(self.model, "encoder") or not hasattr(self.model, "classifier"):
@@ -224,6 +306,14 @@ class TIMMPrunedPromptRecovery(nn.Module):
         if not injected:
             raise ValueError("No LoRA modules were injected into the pruned encoder.")
         self.injected_lora_module_names = tuple(injected)
+
+    def _load_initial_recovery_state(self):
+        if not self.is_staged_recovery:
+            return
+        self.load_state_dict(self._initial_recovery_state, strict=True)
+        for parameter in self.encoder.parameters():
+            parameter.requires_grad = False
+        self._unfreeze_classifier()
 
     def _create_vpt_parameters(self):
         if not self.has_vpt:
@@ -452,6 +542,14 @@ class TIMMPrunedPromptRecovery(nn.Module):
                 "[TIMMPrunedPrompt] LoRA params: "
                 f"{self.lora_parameter_count:,}"
             )
+            print(
+                "[TIMMPrunedPrompt] staged recovery: "
+                f"{'true' if self.is_staged_recovery else 'false'}"
+            )
+            print(
+                "[TIMMPrunedPrompt] initial recovery checkpoint: "
+                f"{self.initial_recovery_checkpoint or 'none'}"
+            )
             prefix = "TIMMPrunedPrompt"
         if self.prompt_allocation_label:
             print(f"[{prefix}] allocation label: {self.prompt_allocation_label}")
@@ -495,6 +593,8 @@ class TIMMPrunedPromptRecovery(nn.Module):
             "lora_modules": self.lora_modules,
             "qkv_lora_components": self.qkv_lora_components,
             "lora_parameter_count": self.lora_parameter_count,
+            "initial_recovery_checkpoint": self.initial_recovery_checkpoint,
+            "staged_recovery": self.is_staged_recovery,
             "kv_prompt_init": "kaiming_uniform",
             "prompt_allocation_label": self.prompt_allocation_label,
             "prompt_init_std": self.prompt_init_std,

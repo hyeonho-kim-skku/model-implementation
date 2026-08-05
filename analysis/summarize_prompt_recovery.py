@@ -50,6 +50,12 @@ LORA_RANK_PATTERN = re.compile(r"\[TIMMPrunedPrompt\] LoRA rank: (\d+|none)")
 LORA_PARAMS_PATTERN = re.compile(
     r"\[TIMMPrunedPrompt\] LoRA params: ([0-9,]+)"
 )
+STAGED_RECOVERY_PATTERN = re.compile(
+    r"\[TIMMPrunedPrompt\] staged recovery: (true|false)"
+)
+INITIAL_RECOVERY_CHECKPOINT_PATTERN = re.compile(
+    r"\[TIMMPrunedPrompt\] initial recovery checkpoint: (.+)"
+)
 
 
 def parse_args():
@@ -167,6 +173,8 @@ def parse_log(path):
     lora_enabled_match = LORA_ENABLED_PATTERN.search(text)
     lora_rank_match = LORA_RANK_PATTERN.search(text)
     lora_params_match = LORA_PARAMS_PATTERN.search(text)
+    staged_recovery_match = STAGED_RECOVERY_PATTERN.search(text)
+    initial_recovery_checkpoint_match = INITIAL_RECOVERY_CHECKPOINT_PATTERN.search(text)
     return {
         "allocation_label": (
             label_match.group(1).strip() if label_match else path.stem
@@ -192,6 +200,17 @@ def parse_log(path):
             parse_parameter_count(lora_params_match.group(1))
             if lora_params_match
             else 0
+        ),
+        "staged_recovery": (
+            staged_recovery_match.group(1) == "true"
+            if staged_recovery_match
+            else False
+        ),
+        "initial_recovery_checkpoint": (
+            initial_recovery_checkpoint_match.group(1).strip()
+            if initial_recovery_checkpoint_match
+            and initial_recovery_checkpoint_match.group(1).strip() != "none"
+            else ""
         ),
         "trainable_params": parse_parameter_count(
             required_match(PARAM_PATTERN, text, path, "trainable parameter count").group(1)

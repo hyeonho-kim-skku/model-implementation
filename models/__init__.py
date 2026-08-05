@@ -115,4 +115,5 @@ def load_model(**kwargs):
             lora_alpha=kwargs.get('lora_alpha'),
             lora_modules=kwargs.get('lora_modules'),
             qkv_lora_components=kwargs.get('qkv_lora_components'),
+            initial_recovery_checkpoint=kwargs.get('initial_recovery_checkpoint'),
         )

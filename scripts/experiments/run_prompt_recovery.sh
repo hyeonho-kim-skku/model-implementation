@@ -27,7 +27,6 @@ for dataset in "${selected_datasets[@]}"; do
       --config "$base_config"
       --model timm_pruned_prompt
       --num-epochs "$EPOCHS"
-      --reset-classifier
       --profile-macs
       --disable-progress
     )
@@ -49,6 +48,19 @@ for dataset in "${selected_datasets[@]}"; do
           --lora-modules qkv,proj,mlp
           --qkv-lora-components q,k,v
           --prompt-allocation-label lora4-vpt-uniform-5
+        )
+        ;;
+      lora_then_vpt5)
+        initial_recovery_checkpoint="$($PYTHON_BIN -c \
+          'import sys, yaml; c=yaml.safe_load(open(sys.argv[1])); p=c.get("lora_recovery_checkpoint"); assert p, "lora_recovery_checkpoint is required"; print(p)' \
+          "$base_config")"
+        experiment_args=(
+          --no-reset-classifier
+          --initial-recovery-checkpoint "$initial_recovery_checkpoint"
+          --prompt-components vpt
+          --prompt-mode deep
+          --num-prompt-tokens 5
+          --prompt-allocation-label lora-then-vpt-uniform-5
         )
         ;;
       vpt_head_proportional)
@@ -128,15 +140,21 @@ for dataset in "${selected_datasets[@]}"; do
         ;;
     esac
 
+    if [[ "$experiment" == "lora_then_vpt5" ]]; then
+      recovery_classifier_args=()
+    else
+      recovery_classifier_args=(--reset-classifier)
+    fi
+
     log_path="$LOG_DIR/${dataset}__${experiment}.log"
     echo "Starting ${dataset}/${experiment}"
     if [[ "$DRY_RUN" == "1" ]]; then
       printf 'Command:'
-      printf ' %q' "$PYTHON_BIN" main.py "${common_args[@]}" "${experiment_args[@]}"
+      printf ' %q' "$PYTHON_BIN" main.py "${common_args[@]}" "${recovery_classifier_args[@]}" "${experiment_args[@]}"
       printf '\n'
       continue
     fi
-    "$PYTHON_BIN" main.py "${common_args[@]}" "${experiment_args[@]}" \
+    "$PYTHON_BIN" main.py "${common_args[@]}" "${recovery_classifier_args[@]}" "${experiment_args[@]}" \
       2>&1 | tee "$log_path"
     echo "Finished ${dataset}/${experiment}"
   done

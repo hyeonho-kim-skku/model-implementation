@@ -1,5 +1,6 @@
 model: timm_pruned_vpt
 artifact_path: ./pruned/vit_base_stanford_cars_lora50_head_gate_taylor_proj_in_sum_abs_samplewise_global040/artifacts/ratio040/pruned_timm_classifier.pth
+lora_recovery_checkpoint: ./runs/timm_pruned_lora_stanford_cars_supervised/0701-201826/best_cls_ckpt.pth
 method: supervised
 dataset: stanford_cars
 mode: supervised

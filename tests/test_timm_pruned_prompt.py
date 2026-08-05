@@ -663,5 +663,132 @@ class LoRAVPTRecoveryTest(unittest.TestCase):
             self.assertTrue(torch.equal(value, reconstructed.state_dict()[key]), key)
 
 
+class StagedLoRAVPTRecoveryTest(unittest.TestCase):
+    def create_lora_checkpoint(self, directory, artifact_path="fake.pth"):
+        with patch(
+            "models.timm_pruned_lora.load_pruned_artifact",
+            return_value=fake_attention_artifact(),
+        ):
+            lora_model = TIMMPrunedLoRA(
+                artifact_path=artifact_path,
+                rank=4,
+                lora_modules="qkv,proj,mlp",
+                qkv_lora_components="q,k,v",
+                reset_classifier=True,
+                num_classes=5,
+            )
+        with torch.no_grad():
+            lora_model.model.classifier.weight.fill_(0.25)
+            lora_model.model.classifier.bias.fill_(0.5)
+        checkpoint_path = Path(directory) / "lora_checkpoint.pth"
+        torch.save(
+            {
+                "model": lora_model.state_dict(),
+                "model_config": lora_model.export_config(),
+            },
+            checkpoint_path,
+        )
+        return checkpoint_path, lora_model
+
+    def build_model(self, checkpoint_path, **kwargs):
+        reset_classifier = kwargs.pop("reset_classifier", False)
+        with patch(
+            "models.timm_pruned_prompt.load_pruned_artifact",
+            return_value=fake_attention_artifact(),
+        ):
+            return TIMMPrunedPromptRecovery(
+                artifact_path="fake.pth",
+                initial_recovery_checkpoint=str(checkpoint_path),
+                prompt_components="vpt",
+                prompt_mode="deep",
+                num_prompt_tokens=5,
+                reset_classifier=reset_classifier,
+                num_classes=5,
+                **kwargs,
+            )
+
+    def test_loads_lora_checkpoint_then_creates_trainable_vpt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_path, lora_model = self.create_lora_checkpoint(directory)
+            model = self.build_model(checkpoint_path)
+
+        self.assertTrue(model.is_staged_recovery)
+        self.assertEqual(model.vpt_prompt_parameter_count, 3 * 5 * 8)
+        self.assertEqual(model.lora_parameter_count, 1_216)
+        self.assertTrue(
+            torch.equal(
+                model.model.classifier.weight,
+                lora_model.model.classifier.weight,
+            )
+        )
+        self.assertTrue(all(not parameter.requires_grad for parameter in model.encoder.parameters()))
+        self.assertTrue(
+            all(parameter.requires_grad for parameter in model.model.classifier.parameters())
+        )
+
+    def test_only_vpt_and_classifier_receive_staged_gradients(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_path, _ = self.create_lora_checkpoint(directory)
+            model = self.build_model(checkpoint_path)
+
+        model.train()
+        model(torch.randn(2, 3, 4, 4)).sum().backward()
+        self.assertTrue(all(parameter.grad is None for parameter in model.encoder.parameters()))
+        self.assertIsNotNone(model.deep_prompt_embeddings.grad)
+        self.assertTrue(
+            all(parameter.grad is not None for parameter in model.model.classifier.parameters())
+        )
+
+    def test_rejects_invalid_staged_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_path, _ = self.create_lora_checkpoint(directory)
+            with self.assertRaisesRegex(ValueError, "reset_classifier=False"):
+                self.build_model(checkpoint_path, reset_classifier=True)
+            with self.assertRaisesRegex(ValueError, "lora_rank conflicts"):
+                self.build_model(checkpoint_path, lora_rank=2)
+            with patch(
+                "models.timm_pruned_prompt.load_pruned_artifact",
+                return_value=fake_attention_artifact(),
+            ), self.assertRaisesRegex(ValueError, "does not match artifact_path"):
+                TIMMPrunedPromptRecovery(
+                    artifact_path="other.pth",
+                    initial_recovery_checkpoint=str(checkpoint_path),
+                    prompt_components="vpt",
+                    prompt_mode="deep",
+                    num_prompt_tokens=5,
+                    reset_classifier=False,
+                    num_classes=5,
+                )
+
+            invalid_checkpoint = Path(directory) / "invalid_checkpoint.pth"
+            torch.save(
+                {
+                    "model": {},
+                    "model_config": {"model": "timm_pruned_prompt"},
+                },
+                invalid_checkpoint,
+            )
+            with self.assertRaisesRegex(ValueError, "timm_pruned_lora"):
+                self.build_model(invalid_checkpoint)
+
+    def test_staged_checkpoint_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_path, _ = self.create_lora_checkpoint(directory)
+            original = self.build_model(checkpoint_path)
+            config = original.export_config()
+            self.assertTrue(config["staged_recovery"])
+            self.assertEqual(config["initial_recovery_checkpoint"], str(checkpoint_path))
+            with patch(
+                "models.timm_pruned_prompt.load_pruned_artifact",
+                return_value=fake_attention_artifact(),
+            ):
+                reconstructed = load_model(**config)
+            reconstructed.load_state_dict(original.state_dict())
+
+        self.assertTrue(reconstructed.is_staged_recovery)
+        for key, value in original.state_dict().items():
+            self.assertTrue(torch.equal(value, reconstructed.state_dict()[key]), key)
+
+
 if __name__ == "__main__":
     unittest.main()
