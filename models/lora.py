@@ -145,6 +145,11 @@ class FusedQKVLoRA(nn.Module):
             qkv[..., start:end] = qkv[..., start:end] + adapter(x)
         return qkv
 
+    @property
+    def bias(self):
+        """Expose the wrapped Linear bias for timm-compatible tooling."""
+        return self.qkv.bias
+
     def to_merged_linear(self):
         # pruning/export 때 쓰기 좋도록 frozen qkv weight에 LoRA weight를 더해
         # 다시 하나의 nn.Linear로 합친다.
@@ -236,6 +241,11 @@ class RaggedFusedQKVLoRA(nn.Module):
             start, end = self._component_range(component)
             qkv[..., start:end] = qkv[..., start:end] + adapter(x)
         return qkv
+
+    @property
+    def bias(self):
+        """Expose the wrapped Linear bias for timm-compatible tooling."""
+        return self.qkv.bias
 
     def to_merged_linear(self):
         merged_qkv = nn.Linear(

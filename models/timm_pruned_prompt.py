@@ -8,6 +8,8 @@ from .layerwise_prompts import (
     LayerwisePromptTokens,
     normalize_prompt_tokens_per_layer,
 )
+from .lora import LoRALinear
+from .timm_lora import inject_lora_into_vit
 from pruning.eval import load_pruned_artifact
 
 
@@ -52,6 +54,10 @@ class TIMMPrunedPromptRecovery(nn.Module):
         kv_prompt_tokens_per_layer=None,
         share_kv_prompt=True,
         prompt_allocation_label=None,
+        lora_rank=None,
+        lora_alpha=None,
+        lora_modules=None,
+        qkv_lora_components=None,
         model_name="timm_pruned_prompt",
     ):
         super().__init__()
@@ -73,6 +79,12 @@ class TIMMPrunedPromptRecovery(nn.Module):
         self.prompt_init_std = float(prompt_init_std)
         self.prompt_allocation_label = prompt_allocation_label
         self.reset_classifier = bool(reset_classifier)
+        self.lora_rank = int(lora_rank) if lora_rank is not None else None
+        self.lora_alpha = lora_alpha
+        self.lora_modules = lora_modules
+        self.qkv_lora_components = qkv_lora_components
+        if self.lora_rank is not None and self.lora_rank <= 0:
+            raise ValueError("lora_rank must be greater than 0 when LoRA is enabled.")
 
         self._validate_requested_prompts(
             prompt_tokens_per_layer=prompt_tokens_per_layer,
@@ -104,6 +116,7 @@ class TIMMPrunedPromptRecovery(nn.Module):
         else:
             self._unfreeze_classifier()
         self._inject_kv_prompt_modules()
+        self._inject_lora_modules()
         self._create_vpt_parameters()
         self._log_configuration()
 
@@ -197,6 +210,21 @@ class TIMMPrunedPromptRecovery(nn.Module):
             share_key_value=self.share_kv_prompt,
         )
 
+    def _inject_lora_modules(self):
+        if self.lora_rank is None:
+            self.injected_lora_module_names = ()
+            return
+        injected = inject_lora_into_vit(
+            self.encoder,
+            rank=self.lora_rank,
+            alpha=self.lora_alpha,
+            qkv_lora_components=self.qkv_lora_components,
+            lora_modules=self.lora_modules,
+        )
+        if not injected:
+            raise ValueError("No LoRA modules were injected into the pruned encoder.")
+        self.injected_lora_module_names = tuple(injected)
+
     def _create_vpt_parameters(self):
         if not self.has_vpt:
             return
@@ -287,6 +315,15 @@ class TIMMPrunedPromptRecovery(nn.Module):
             block.attn.prompt_parameter_count
             for block in self.encoder.blocks
             if isinstance(block.attn, KVPromptedAttention)
+        )
+
+    @property
+    def lora_parameter_count(self):
+        return sum(
+            parameter.numel()
+            for module in self.encoder.modules()
+            if isinstance(module, LoRALinear)
+            for parameter in module.parameters()
         )
 
     def _embed_images(self, images):
@@ -403,6 +440,18 @@ class TIMMPrunedPromptRecovery(nn.Module):
                 "[TIMMPrunedPrompt] KV prompt params: "
                 f"{self.kv_prompt_parameter_count:,}"
             )
+            print(
+                "[TIMMPrunedPrompt] LoRA enabled: "
+                f"{'true' if self.lora_rank is not None else 'false'}"
+            )
+            print(
+                "[TIMMPrunedPrompt] LoRA rank: "
+                f"{self.lora_rank if self.lora_rank is not None else 'none'}"
+            )
+            print(
+                "[TIMMPrunedPrompt] LoRA params: "
+                f"{self.lora_parameter_count:,}"
+            )
             prefix = "TIMMPrunedPrompt"
         if self.prompt_allocation_label:
             print(f"[{prefix}] allocation label: {self.prompt_allocation_label}")
@@ -441,6 +490,11 @@ class TIMMPrunedPromptRecovery(nn.Module):
             "total_kv_prompt_tokens": self.total_kv_prompt_tokens,
             "vpt_prompt_parameter_count": self.vpt_prompt_parameter_count,
             "kv_prompt_parameter_count": self.kv_prompt_parameter_count,
+            "lora_rank": self.lora_rank,
+            "lora_alpha": self.lora_alpha,
+            "lora_modules": self.lora_modules,
+            "qkv_lora_components": self.qkv_lora_components,
+            "lora_parameter_count": self.lora_parameter_count,
             "kv_prompt_init": "kaiming_uniform",
             "prompt_allocation_label": self.prompt_allocation_label,
             "prompt_init_std": self.prompt_init_std,

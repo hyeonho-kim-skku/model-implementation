@@ -111,4 +111,8 @@ def load_model(**kwargs):
             kv_prompt_tokens_per_layer=kwargs.get('kv_prompt_tokens_per_layer'),
             share_kv_prompt=kwargs.get('share_kv_prompt', True),
             prompt_allocation_label=kwargs.get('prompt_allocation_label'),
+            lora_rank=kwargs.get('lora_rank'),
+            lora_alpha=kwargs.get('lora_alpha'),
+            lora_modules=kwargs.get('lora_modules'),
+            qkv_lora_components=kwargs.get('qkv_lora_components'),
         )

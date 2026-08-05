@@ -13,6 +13,8 @@ from models.layerwise_prompts import (
     LayerwisePromptTokens,
     normalize_prompt_tokens_per_layer,
 )
+from models.lora import FusedQKVLoRA, LoRALinear, LoRAWrappedLinear
+from models.timm_pruned_lora import TIMMPrunedLoRA
 from models.timm_pruned_prompt import (
     TIMMPrunedPromptRecovery,
     TIMMPrunedVPT,
@@ -90,11 +92,15 @@ class RecordingAttentionBlock(nn.Module):
             num_heads=num_heads,
             attn_head_dim=head_dim,
         )
+        self.mlp = nn.Module()
+        self.mlp.fc1 = nn.Linear(embedding_dim, 2 * embedding_dim)
+        self.mlp.fc2 = nn.Linear(2 * embedding_dim, embedding_dim)
         self.last_sequence_length = None
 
     def forward(self, tokens):
         self.last_sequence_length = tokens.shape[1]
-        return tokens + self.attn(tokens)
+        tokens = tokens + self.attn(tokens)
+        return tokens + self.mlp.fc2(torch.relu(self.mlp.fc1(tokens)))
 
 
 class FakeAttentionEncoder(FakeEncoder):
@@ -551,6 +557,110 @@ class KVPromptRecoveryTest(unittest.TestCase):
         macs8 = profile_model_macs(kv8, "cpu")
 
         self.assertEqual(macs8 - macs5, 3 * (1 + 2 + 1) * 5 * (2 * 4 + 1))
+
+
+class LoRAVPTRecoveryTest(unittest.TestCase):
+    def build_model(self, **kwargs):
+        with patch(
+            "models.timm_pruned_prompt.load_pruned_artifact",
+            return_value=fake_attention_artifact(),
+        ):
+            return TIMMPrunedPromptRecovery(
+                artifact_path="fake.pth",
+                prompt_components="vpt",
+                prompt_mode="deep",
+                num_prompt_tokens=5,
+                lora_rank=4,
+                lora_modules="qkv,proj,mlp",
+                qkv_lora_components="q,k,v",
+                num_classes=5,
+                **kwargs,
+            )
+
+    def test_injects_lora_into_all_targets_and_vpt_into_each_block(self):
+        model = self.build_model()
+        output = model(torch.randn(2, 3, 4, 4))
+
+        self.assertEqual(tuple(output.shape), (2, 5))
+        self.assertEqual(model.resolved_vpt_prompt_tokens_per_layer, (5, 5, 5))
+        self.assertEqual(model.vpt_prompt_parameter_count, 3 * 5 * 8)
+        self.assertEqual(len(model.injected_lora_module_names), 3 * 4)
+        for block in model.encoder.blocks:
+            self.assertIsInstance(block.attn.qkv, FusedQKVLoRA)
+            self.assertIsInstance(block.attn.proj, LoRAWrappedLinear)
+            self.assertIsInstance(block.mlp.fc1, LoRAWrappedLinear)
+            self.assertIsInstance(block.mlp.fc2, LoRAWrappedLinear)
+        self.assertEqual(
+            [block.last_sequence_length for block in model.encoder.blocks],
+            [10, 10, 10],
+        )
+
+    def test_only_lora_vpt_and_classifier_are_trainable(self):
+        model = self.build_model()
+        model.train()
+        model(torch.randn(2, 3, 4, 4)).sum().backward()
+
+        lora_parameters = [
+            parameter
+            for module in model.encoder.modules()
+            if isinstance(module, LoRALinear)
+            for parameter in module.parameters()
+        ]
+        lora_parameter_ids = {id(parameter) for parameter in lora_parameters}
+        trainable_encoder_ids = {
+            id(parameter)
+            for parameter in model.encoder.parameters()
+            if parameter.requires_grad
+        }
+        self.assertEqual(trainable_encoder_ids, lora_parameter_ids)
+        self.assertTrue(all(parameter.grad is not None for parameter in lora_parameters))
+        self.assertIsNotNone(model.deep_prompt_embeddings.grad)
+        self.assertTrue(
+            all(parameter.grad is not None for parameter in model.model.classifier.parameters())
+        )
+
+    def test_lora_parameter_count_matches_existing_pruned_lora(self):
+        combined = self.build_model()
+        with patch(
+            "models.timm_pruned_lora.load_pruned_artifact",
+            return_value=fake_attention_artifact(),
+        ):
+            lora_only = TIMMPrunedLoRA(
+                artifact_path="fake.pth",
+                rank=4,
+                lora_modules="qkv,proj,mlp",
+                qkv_lora_components="q,k,v",
+                reset_classifier=True,
+                num_classes=5,
+            )
+        reference_count = sum(
+            parameter.numel()
+            for module in lora_only.model.encoder.modules()
+            if isinstance(module, LoRALinear)
+            for parameter in module.parameters()
+        )
+        self.assertEqual(combined.lora_parameter_count, reference_count)
+
+    def test_checkpoint_round_trip_preserves_lora_and_vpt(self):
+        original = self.build_model(lora_alpha=8)
+        config = original.export_config()
+        self.assertEqual(config["lora_rank"], 4)
+        self.assertEqual(config["lora_alpha"], 8)
+        self.assertEqual(config["lora_modules"], "qkv,proj,mlp")
+        self.assertEqual(config["qkv_lora_components"], "q,k,v")
+        self.assertEqual(config["lora_parameter_count"], original.lora_parameter_count)
+
+        with patch(
+            "models.timm_pruned_prompt.load_pruned_artifact",
+            return_value=fake_attention_artifact(),
+        ):
+            reconstructed = load_model(**config)
+        reconstructed.load_state_dict(original.state_dict())
+
+        self.assertEqual(reconstructed.resolved_vpt_prompt_tokens_per_layer, (5, 5, 5))
+        self.assertEqual(reconstructed.lora_parameter_count, original.lora_parameter_count)
+        for key, value in original.state_dict().items():
+            self.assertTrue(torch.equal(value, reconstructed.state_dict()[key]), key)
 
 
 if __name__ == "__main__":

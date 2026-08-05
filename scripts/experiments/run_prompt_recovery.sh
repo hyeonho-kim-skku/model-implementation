@@ -8,6 +8,7 @@ EPOCHS="${EPOCHS:-20}"
 DATASETS="${DATASETS:-cifar100}"
 EXPERIMENTS="${EXPERIMENTS:-kv5,kv8}"
 LOG_DIR="${LOG_DIR:-logs/prompt_recovery_$(date +%Y%m%d_%H%M%S)}"
+DRY_RUN="${DRY_RUN:-0}"
 
 mkdir -p "$LOG_DIR"
 IFS=',' read -ra selected_datasets <<< "$DATASETS"
@@ -37,6 +38,17 @@ for dataset in "${selected_datasets[@]}"; do
           --prompt-mode deep
           --num-prompt-tokens 5
           --prompt-allocation-label vpt-uniform-5
+        )
+        ;;
+      lora4_vpt5)
+        experiment_args=(
+          --prompt-components vpt
+          --prompt-mode deep
+          --num-prompt-tokens 5
+          --lora-rank 4
+          --lora-modules qkv,proj,mlp
+          --qkv-lora-components q,k,v
+          --prompt-allocation-label lora4-vpt-uniform-5
         )
         ;;
       vpt_head_proportional)
@@ -118,11 +130,21 @@ for dataset in "${selected_datasets[@]}"; do
 
     log_path="$LOG_DIR/${dataset}__${experiment}.log"
     echo "Starting ${dataset}/${experiment}"
+    if [[ "$DRY_RUN" == "1" ]]; then
+      printf 'Command:'
+      printf ' %q' "$PYTHON_BIN" main.py "${common_args[@]}" "${experiment_args[@]}"
+      printf '\n'
+      continue
+    fi
     "$PYTHON_BIN" main.py "${common_args[@]}" "${experiment_args[@]}" \
       2>&1 | tee "$log_path"
     echo "Finished ${dataset}/${experiment}"
   done
 done
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  exit 0
+fi
 
 "$PYTHON_BIN" analysis/summarize_prompt_recovery.py \
   --log-dir "$LOG_DIR" \

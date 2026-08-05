@@ -43,6 +43,13 @@ VPT_PROMPT_PARAMS_PATTERN = re.compile(
 KV_PROMPT_PARAMS_PATTERN = re.compile(
     r"\[TIMMPrunedPrompt\] KV prompt params: ([0-9,]+)"
 )
+LORA_ENABLED_PATTERN = re.compile(
+    r"\[TIMMPrunedPrompt\] LoRA enabled: (true|false)"
+)
+LORA_RANK_PATTERN = re.compile(r"\[TIMMPrunedPrompt\] LoRA rank: (\d+|none)")
+LORA_PARAMS_PATTERN = re.compile(
+    r"\[TIMMPrunedPrompt\] LoRA params: ([0-9,]+)"
+)
 
 
 def parse_args():
@@ -157,6 +164,9 @@ def parse_log(path):
 
     label_match = LABEL_PATTERN.search(text)
     macs_match = MACS_PATTERN.search(text)
+    lora_enabled_match = LORA_ENABLED_PATTERN.search(text)
+    lora_rank_match = LORA_RANK_PATTERN.search(text)
+    lora_params_match = LORA_PARAMS_PATTERN.search(text)
     return {
         "allocation_label": (
             label_match.group(1).strip() if label_match else path.stem
@@ -170,6 +180,19 @@ def parse_log(path):
         "total_kv_prompt_tokens": total_kv_tokens,
         "vpt_prompt_params": vpt_prompt_params,
         "kv_prompt_params": kv_prompt_params,
+        "lora_enabled": (
+            lora_enabled_match.group(1) == "true" if lora_enabled_match else False
+        ),
+        "lora_rank": (
+            int(lora_rank_match.group(1))
+            if lora_rank_match and lora_rank_match.group(1) != "none"
+            else ""
+        ),
+        "lora_params": (
+            parse_parameter_count(lora_params_match.group(1))
+            if lora_params_match
+            else 0
+        ),
         "trainable_params": parse_parameter_count(
             required_match(PARAM_PATTERN, text, path, "trainable parameter count").group(1)
         ),

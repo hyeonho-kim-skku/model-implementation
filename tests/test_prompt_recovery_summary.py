@@ -61,6 +61,9 @@ class PromptRecoverySummaryTest(unittest.TestCase):
 [TIMMPrunedPrompt] total KV tokens: 24
 [TIMMPrunedPrompt] VPT prompt params: 120
 [TIMMPrunedPrompt] KV prompt params: 128
+[TIMMPrunedPrompt] LoRA enabled: true
+[TIMMPrunedPrompt] LoRA rank: 4
+[TIMMPrunedPrompt] LoRA params: 456
 [TIMMPrunedPrompt] allocation label: vpt5-kv8
 [TIMMPrunedPrompt] trainable params: 1,234 / 10,000 (12.34%)
 [ModelProfile] MACs: 9,999
@@ -86,7 +89,27 @@ class PromptRecoverySummaryTest(unittest.TestCase):
         self.assertEqual(metrics["total_kv_prompt_tokens"], 24)
         self.assertEqual(metrics["vpt_prompt_params"], 120)
         self.assertEqual(metrics["kv_prompt_params"], 128)
+        self.assertTrue(metrics["lora_enabled"])
+        self.assertEqual(metrics["lora_rank"], 4)
+        self.assertEqual(metrics["lora_params"], 456)
         self.assertEqual(legacy_metrics["kv_prompt_sharing"], "shared")
+
+    def test_old_prompt_logs_default_to_no_lora(self):
+        log_text = """
+[TIMMPrunedVPT] prompt mode: deep
+[TIMMPrunedVPT] prompt tokens per layer: [5, 5]
+[TIMMPrunedVPT] total prompt tokens: 10
+[TIMMPrunedVPT] trainable params: 100 / 1,000 (10.0%)
+[Epoch 0] - Test Loss: 1.0, Test Acc: 70.00%, Best Acc: 70.00
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old.log"
+            path.write_text(log_text)
+            metrics = parse_log(path)
+
+        self.assertFalse(metrics["lora_enabled"])
+        self.assertEqual(metrics["lora_rank"], "")
+        self.assertEqual(metrics["lora_params"], 0)
 
 
 if __name__ == "__main__":
