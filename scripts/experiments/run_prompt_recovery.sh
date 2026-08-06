@@ -39,6 +39,14 @@ for dataset in "${selected_datasets[@]}"; do
           --prompt-allocation-label vpt-uniform-5
         )
         ;;
+      vpt26)
+        experiment_args=(
+          --prompt-components vpt
+          --prompt-mode deep
+          --num-prompt-tokens 26
+          --prompt-allocation-label vpt-uniform-26
+        )
+        ;;
       lora4_vpt5)
         experiment_args=(
           --prompt-components vpt
